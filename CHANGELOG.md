@@ -1,5 +1,12 @@
 # @kernhq/module-quire
 
+## 0.3.1
+
+### Patch Changes
+
+- 59f0ab4: Export `PageVersion` and `VersionKind` from the client, so a version list can be typed without
+  reaching into `./contract`.
+
 ## 0.3.0
 
 ### Minor Changes

@@ -48,10 +48,20 @@ export function rankBetween(before: string | null, after: string | null): string
   for (let i = 0; ; i++) {
     const da = i < lo.length ? indexOfDigit(lo[i] as string) : -1
     const db = free ? BASE : i < hi.length ? indexOfDigit(hi[i] as string) : 0
-    if (db - da > 1) return prefix + DIGITS[Math.floor((da + db) / 2)]
-    const kept = da >= 0 ? da : 0
-    prefix += DIGITS[kept]
-    if (!free && kept < db) free = true
+    /**
+     * An absent lower bound is digit 0, not "below 0".
+     *
+     * Digit 0 can never be the last digit of a key: nothing sorts strictly between `''` and `'0'`,
+     * so a key ending in 0 leaves no room to insert in front of it. Treating the absent bound as -1
+     * makes the midpoint of (nothing, '2') come out as '0', and the next insertion at the front then
+     * looks for a key below '0', finds none, and appends a digit for ever — a loop inside a request
+     * handler that allocates until the process dies. Reaching it takes five insertions at the top of
+     * the same list.
+     */
+    const low = da >= 0 ? da : 0
+    if (db - low > 1) return prefix + DIGITS[Math.floor((low + db) / 2)]
+    prefix += DIGITS[low]
+    if (!free && low < db) free = true
   }
 }
 

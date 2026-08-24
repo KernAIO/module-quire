@@ -69,7 +69,9 @@
   "devDependencies": {
     "@kernhq/tsconfig": "^0.1.0",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
     "drizzle-kit": "^0.31.0",
+    "pg": "^8.16.0",
     "typescript": "~5.9.3",
     "vitest": "^4.0.0"
   }

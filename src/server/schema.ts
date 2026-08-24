@@ -1,13 +1,5 @@
 import { sql } from 'drizzle-orm'
-import {
-  boolean,
-  index,
-  pgSchema,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-} from 'drizzle-orm/pg-core'
+import { boolean, index, pgSchema, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 
 /**
  * This module's tables, in its own Postgres schema.
@@ -65,6 +57,12 @@ export const pages = schema.table(
      * A fractional index as text, not an integer. Moving a page between two siblings must not
      * renumber the rest: two people reordering at once would write different numbers for the same
      * rows, and the tree would disagree with itself until someone reloaded.
+     *
+     * **The column is `COLLATE "C"` in the migration, and has to stay that way.** The keys are
+     * base-62 fractions whose alphabet is ordered by code point, so `ORDER BY position` is only the
+     * order the algorithm intended under byte comparison. This database is `en_US.UTF-8`, where
+     * `'U' < 'c'` is false — three pages created in order come back reversed. drizzle-kit does not
+     * carry the collation in its snapshot, so if you ever regenerate this migration, put it back.
      */
     position: text('position').notNull(),
     kind: text('kind').notNull().default('page'),

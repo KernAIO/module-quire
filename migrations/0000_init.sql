@@ -5,7 +5,7 @@ CREATE TABLE "mod_quire"."pages" (
 	"workspace_id" uuid NOT NULL,
 	"space_id" uuid NOT NULL,
 	"parent_id" uuid,
-	"position" text NOT NULL,
+	"position" text COLLATE "C" NOT NULL,
 	"kind" text DEFAULT 'page' NOT NULL,
 	"title" text DEFAULT '' NOT NULL,
 	"icon" text,

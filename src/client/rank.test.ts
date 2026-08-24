@@ -55,6 +55,33 @@ describe('rankBetween', () => {
   })
 })
 
+describe('inserting at the front, over and over', () => {
+  it('keeps finding room instead of looping until the process dies', () => {
+    // The regression this guards: an absent lower bound was treated as "below digit 0", so the
+    // fifth insertion at the top of a list minted '0', and the sixth searched for something below
+    // it for ever — growing a string until the heap gave out. It took five pages created at the top
+    // of one space to hit it.
+    let first = initialRank()
+    const seen = new Set<string>([first])
+    for (let i = 0; i < 200; i++) {
+      const next = rankBetween(null, first)
+      expect(next < first, `${next} < ${first} failed at insertion ${i}`).toBe(true)
+      expect(isValidRank(next), `${next} is not a valid key at insertion ${i}`).toBe(true)
+      expect(seen.has(next), `collision at insertion ${i}`).toBe(false)
+      seen.add(next)
+      first = next
+    }
+  })
+
+  it('never mints a key with no room below it', () => {
+    let first = initialRank()
+    for (let i = 0; i < 50; i++) {
+      first = rankBetween(null, first)
+      expect(first.endsWith('0'), `${first} ends in the lowest digit`).toBe(false)
+    }
+  })
+})
+
 describe('rankSequence', () => {
   it('produces keys that already sort into the order they were asked for', () => {
     const keys = rankSequence(25)

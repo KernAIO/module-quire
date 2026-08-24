@@ -1,6 +1,6 @@
 import { createModuleClient, type KernClientOptions } from '@kernhq/sdk'
 import type { ContractRouterClient } from '@orpc/contract'
-import type { QuireContract } from '../contract.js'
+import type { PageNode, QuireContract } from '../contract/index.js'
 
 /**
  * The client half.
@@ -24,25 +24,44 @@ export function createQuireClient(opts: KernClientOptions): QuireApi {
 
 export {
   MODULE_ID,
-  type Note,
-  quireCapabilities,
+  type Page,
+  type PageKind,
+  type PageNode,
   quirePermissions,
-} from '../contract.js'
+  type Space,
+  type SpaceVisibility,
+} from '../contract/index.js'
+export * from './rank.js'
 
 /** The permission keys, so the app gates on a constant rather than a string it retyped. */
 export const QUIRE_PERMISSIONS = {
-  view: 'quire.note.view',
-  manage: 'quire.note.manage',
+  spaceView: 'quire.space.view',
+  spaceManage: 'quire.space.manage',
+  pageView: 'quire.page.view',
+  pageCreate: 'quire.page.create',
+  pageEdit: 'quire.page.edit',
+  pageDelete: 'quire.page.delete',
 } as const
 
 /**
- * The capability ids, for the same reason.
+ * Build the sidebar tree from the flat, position-ordered list `pages.tree` returns.
  *
- * A client contribution names its own module's capability unqualified — `capability: 'archive'` —
- * because from inside a module there is only one namespace. The shell prefixes it with this
- * module's id when it builds the workspace's set, which is where several modules' capabilities meet.
+ * Isomorphic on purpose: the app draws it and the published-site renderer will need the same shape,
+ * and neither should re-derive it. Rows whose parent is missing — because it was archived and this
+ * caller asked for the live tree — are lifted to the top rather than dropped, so a page is never
+ * invisible because of where it happens to sit.
  */
-export const QUIRE_CAPABILITIES = {
-  notes: 'notes',
-  archive: 'archive',
-} as const
+export interface PageTreeNode extends PageNode {
+  children: PageTreeNode[]
+}
+
+export function buildPageTree(nodes: readonly PageNode[]): PageTreeNode[] {
+  const byId = new Map<string, PageTreeNode>(nodes.map((n) => [n.id, { ...n, children: [] }]))
+  const roots: PageTreeNode[] = []
+  for (const node of byId.values()) {
+    const parent = node.parentId ? byId.get(node.parentId) : undefined
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  return roots
+}

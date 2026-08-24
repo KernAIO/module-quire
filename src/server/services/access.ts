@@ -9,8 +9,8 @@
  * carries every ancestor.
  */
 import type { Principal } from '@kernhq/contracts'
-import { type Kernel, KernError, type Tx } from '@kernhq/kernel'
-import { and, eq, isNull } from 'drizzle-orm'
+import { KernError, type Kernel, type Tx } from '@kernhq/kernel'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { pages, spaces } from '../schema.js'
 
 export interface PageScope {
@@ -74,16 +74,16 @@ export function quireAccess(kernel: Kernel) {
      * ancestor would otherwise hang the connection rather than fail.
      */
     async scopeOf(tx: Tx, workspaceId: string, pageId: string): Promise<PageScope> {
-      const rows = await tx.execute<{ id: string; space_id: string; depth: number }>(`
+      const rows = await tx.execute<{ id: string; space_id: string; depth: number }>(sql`
         with recursive chain as (
           select id, space_id, parent_id, 0 as depth
             from mod_quire.pages
-           where workspace_id = '${workspaceId}'::uuid and id = '${pageId}'::uuid
+           where workspace_id = ${workspaceId}::uuid and id = ${pageId}::uuid
           union all
           select p.id, p.space_id, p.parent_id, chain.depth + 1
             from mod_quire.pages p
             join chain on p.id = chain.parent_id
-           where p.workspace_id = '${workspaceId}'::uuid
+           where p.workspace_id = ${workspaceId}::uuid
         ) cycle id set looped using path
         select id, space_id, depth from chain order by depth
       `)

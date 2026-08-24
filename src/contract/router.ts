@@ -1,4 +1,4 @@
-import { baseContract, Id, page, PageInput, WorkspaceId } from '@kernhq/contracts'
+import { baseContract, Id, PageInput, page, WorkspaceId } from '@kernhq/contracts'
 import { z } from 'zod'
 import { Ok, Page, PageKind, PageNode, Space, SpaceVisibility } from './models.js'
 

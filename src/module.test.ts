@@ -23,7 +23,7 @@ import {
   quireContract,
   quireEvents,
   quirePermissions,
-} from './contract.js'
+} from './contract/index.js'
 import { implement_ } from './server/_impl.js'
 import { quireModule } from './server/index.js'
 
@@ -102,8 +102,7 @@ describe('every procedure is authorised', () => {
 describe('the module declares what it uses', () => {
   it('names its permissions and events under its own module id', () => {
     for (const p of quirePermissions) expect(p.key.startsWith(`${MODULE_ID}.`), p.key).toBe(true)
-    for (const e of Object.values(quireEvents))
-      expect(e.name.startsWith(`${MODULE_ID}.`), e.name).toBe(true)
+    for (const e of Object.values(quireEvents)) expect(e.name.startsWith(`${MODULE_ID}.`), e.name).toBe(true)
   })
 
   it('registers those permissions and events on the server module', () => {

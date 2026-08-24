@@ -15,14 +15,8 @@ export const quireEvents = {
   pageUpdated: defineEvent('quire.page.updated', page),
   pageMoved: defineEvent('quire.page.moved', page.extend({ parentId: Id.nullable() })),
   pageArchived: defineEvent('quire.page.archived', page.extend({ archived: z.boolean() })),
-  pageTrashed: defineEvent(
-    'quire.page.trashed',
-    page.extend({ count: z.number().int().nonnegative() }),
-  ),
+  pageTrashed: defineEvent('quire.page.trashed', page.extend({ count: z.number().int().nonnegative() })),
   pageRestored: defineEvent('quire.page.restored', page),
   /** The page and its descendants are gone; anything holding a reference should drop it. */
-  pageDeleted: defineEvent(
-    'quire.page.deleted',
-    page.extend({ pageIds: z.array(Id) }),
-  ),
+  pageDeleted: defineEvent('quire.page.deleted', page.extend({ pageIds: z.array(Id) })),
 } as const

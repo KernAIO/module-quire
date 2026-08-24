@@ -28,9 +28,11 @@ export {
   type Page,
   type PageKind,
   type PageNode,
+  type PageVersion,
   quirePermissions,
   type Space,
   type SpaceVisibility,
+  type VersionKind,
 } from '../contract/index.js'
 export * from './rank.js'
 

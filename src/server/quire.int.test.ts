@@ -219,7 +219,7 @@ describe('migrations', () => {
         where relnamespace = 'mod_quire'::regnamespace and relkind = 'r'
         order by relname`)
     const tables = res.rows.filter((r) => r.relname !== '__migrations')
-    expect(tables.map((r) => r.relname)).toEqual(['page_versions', 'pages', 'spaces'])
+    expect(tables.map((r) => r.relname)).toEqual(['comments', 'page_versions', 'pages', 'spaces'])
     for (const t of tables) {
       expect(t.relrowsecurity, `${t.relname} has RLS off`).toBe(true)
       expect(t.relforcerowsecurity, `${t.relname} does not force RLS`).toBe(true)
@@ -562,6 +562,163 @@ describe('versions, drafts and publishing', () => {
     await expect(run((tx) => svc.versions.revert(tx, alice(), WS_A, page.id))).rejects.toThrow(
       /never been published/i,
     )
+  })
+})
+
+describe('comments', () => {
+  const body = (text: string, mention?: string) => ({
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: [
+          { type: 'text', text },
+          ...(mention ? [{ type: 'mention', attrs: { id: mention, label: 'Bob' } }] : []),
+        ],
+      },
+    ],
+  })
+
+  it('starts a thread anchored to a piece of the page', async () => {
+    const page = await newPage({ title: 'Commented' })
+    const c = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('is this still true?'),
+        anchor: { from: 'AQID', to: 'BAUG' },
+        quotedText: 'the sentence in question',
+        parentId: null,
+      }),
+    )
+    expect(c.threadId, 'a root comment leads its own thread').toBe(c.id)
+    expect(c.bodyText).toBe('is this still true?')
+    expect(c.quotedText).toBe('the sentence in question')
+
+    const threads = await run((tx) => svc.comments.list(tx, WS_A, page.id, false))
+    expect(threads).toHaveLength(1)
+    expect(threads[0]?.root.id).toBe(c.id)
+  })
+
+  it('flattens the body and collects mentions without a second parse', async () => {
+    const page = await newPage({ title: 'Mentioning' })
+    const c = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('what do you think ', BOB),
+        anchor: null,
+        quotedText: '',
+        parentId: null,
+      }),
+    )
+    expect(c.mentionIds).toEqual([BOB])
+    expect(c.bodyText).toBe('what do you think')
+  })
+
+  it('joins replies to the thread rather than nesting them further', async () => {
+    const page = await newPage({ title: 'Threaded' })
+    const root = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('first'),
+        anchor: null,
+        quotedText: '',
+        parentId: null,
+      }),
+    )
+    const reply = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('second'),
+        anchor: null,
+        quotedText: '',
+        parentId: root.id,
+      }),
+    )
+    const deep = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('third'),
+        anchor: null,
+        quotedText: '',
+        parentId: reply.id,
+      }),
+    )
+    expect(deep.threadId, 'a reply to a reply is still the same conversation').toBe(root.id)
+
+    const threads = await run((tx) => svc.comments.list(tx, WS_A, page.id, false))
+    expect(threads).toHaveLength(1)
+    expect(threads[0]?.replies).toHaveLength(2)
+  })
+
+  it('resolves the whole thread, not one remark in it', async () => {
+    const page = await newPage({ title: 'Resolvable' })
+    const root = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('a question'),
+        anchor: null,
+        quotedText: '',
+        parentId: null,
+      }),
+    )
+    const reply = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('an answer'),
+        anchor: null,
+        quotedText: '',
+        parentId: root.id,
+      }),
+    )
+    // Resolving from the reply settles the conversation it belongs to.
+    await run((tx) => svc.comments.resolve(tx, alice(), WS_A, reply.id, true))
+
+    expect(await run((tx) => svc.comments.list(tx, WS_A, page.id, false))).toHaveLength(0)
+    const withResolved = await run((tx) => svc.comments.list(tx, WS_A, page.id, true))
+    expect(withResolved[0]?.resolved).toBe(true)
+  })
+
+  it('refuses to let one person edit another’s words', async () => {
+    const page = await newPage({ title: 'Not yours' })
+    const c = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('mine'),
+        anchor: null,
+        quotedText: '',
+        parentId: null,
+      }),
+    )
+    await expect(
+      run((tx) => svc.comments.update(tx, principal(BOB, WS_A), WS_A, c.id, body('rewritten'))),
+    ).rejects.toThrow()
+  })
+
+  it('keeps a thread readable when the remark that started it is deleted', async () => {
+    const page = await newPage({ title: 'Orphaned' })
+    const root = await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('the original point'),
+        anchor: null,
+        quotedText: '',
+        parentId: null,
+      }),
+    )
+    await run((tx) =>
+      svc.comments.create(tx, alice(), WS_A, {
+        pageId: page.id,
+        body: body('the reply that still matters'),
+        anchor: null,
+        quotedText: '',
+        parentId: root.id,
+      }),
+    )
+    await run((tx) => svc.comments.remove(tx, alice(), WS_A, root.id))
+
+    const threads = await run((tx) => svc.comments.list(tx, WS_A, page.id, false))
+    expect(threads, 'the replies are still somebody’s words').toHaveLength(1)
+    expect(threads[0]?.root.bodyText).toBe('the reply that still matters')
   })
 })
 

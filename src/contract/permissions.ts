@@ -49,6 +49,14 @@ export const quirePermissions = definePermissions([
     dangerous: false,
   },
   {
+    key: 'quire.page.comment',
+    label: 'Comment on pages',
+    description: 'Leave a remark in the margin without being able to change the page',
+    scope: 'space',
+    defaultRoles: ['owner', 'admin', 'member', 'guest'],
+    dangerous: false,
+  },
+  {
     key: 'quire.page.publish',
     label: 'Publish pages',
     description: 'Decide which version readers and any public site are served',

@@ -10,7 +10,9 @@ import {
 } from '@kernhq/kernel'
 import { implement } from '@orpc/server'
 import { MODULE_ID, quireContract, quireEvents } from '../contract/index.js'
+import { toComment } from './services/comments.js'
 import { quireServices } from './services/index.js'
+import { createNotify } from './services/notify.js'
 import { documentNameOf, toPage } from './services/pages.js'
 import { toVersion } from './services/versions.js'
 
@@ -29,6 +31,7 @@ const os = implement(quireContract).$context<RequestContext>()
 export function implement_(kernel: Kernel) {
   const scoped = os.use(workspaceScoped(MODULE_ID))
   const svc = quireServices(kernel)
+  const notify = createNotify(kernel)
 
   const run = <T>(
     context: RequestContext,
@@ -366,6 +369,79 @@ export function implement_(kernel: Kernel) {
           )
           await announce(input.workspaceId, 'page', pageId, 'updated')
           return version
+        }),
+    },
+
+    comments: {
+      list: scoped.comments.list.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          return svc.comments.list(tx, input.workspaceId, input.pageId, input.includeResolved)
+        }),
+      ),
+
+      create: scoped.comments.create
+        .use(requires('quire.page.comment'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+            await svc.access.requirePage(context.principal, 'quire.page.comment', input.workspaceId, scope)
+            return svc.comments.create(tx, context.principal, input.workspaceId, input)
+          })
+
+          // Everyone named in the body, except whoever wrote it — telling somebody they mentioned
+          // themselves is noise, and it is the commonest way a notification inbox loses trust.
+          await notify.mentions(input.workspaceId, row, context.principal.userId)
+          await kernel.emit(
+            quireEvents.commentCreated,
+            { commentId: row.id, pageId: input.pageId, workspaceId: input.workspaceId },
+            { workspaceId: input.workspaceId, actorId: context.principal.userId },
+          )
+          await announce(input.workspaceId, 'comment', row.id, 'created', { pageId: input.pageId })
+          return toComment(row)
+        }),
+
+      update: scoped.comments.update
+        .use(requires('quire.page.comment'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, (tx) =>
+            svc.comments.update(tx, context.principal, input.workspaceId, input.commentId, input.body),
+          )
+          await announce(input.workspaceId, 'comment', row.id, 'updated', { pageId: row.pageId })
+          return toComment(row)
+        }),
+
+      remove: scoped.comments.remove
+        .use(requires('quire.page.comment'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, (tx) =>
+            svc.comments.remove(tx, context.principal, input.workspaceId, input.commentId),
+          )
+          await announce(input.workspaceId, 'comment', row.id, 'deleted', { pageId: row.pageId })
+          return { ok: true as const }
+        }),
+
+      resolve: scoped.comments.resolve
+        .use(requires('quire.page.comment'))
+        .handler(async ({ input, context }) => {
+          const threads = await run(context, input.workspaceId, async (tx) => {
+            const row = await svc.comments.resolve(
+              tx,
+              context.principal,
+              input.workspaceId,
+              input.commentId,
+              input.resolved,
+            )
+            const all = await svc.comments.list(tx, input.workspaceId, row.pageId, true)
+            const thread = all.find((t) => t.id === row.threadId)
+            if (!thread) throw KernError.notFound('Comment')
+            return { thread, pageId: row.pageId }
+          })
+          await announce(input.workspaceId, 'comment', threads.thread.id, 'updated', {
+            pageId: threads.pageId,
+          })
+          return threads.thread
         }),
     },
 

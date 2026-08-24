@@ -1,6 +1,17 @@
 import { baseContract, Id, PageInput, page, WorkspaceId } from '@kernhq/contracts'
 import { z } from 'zod'
-import { Ok, Page, PageKind, PageNode, PageVersion, Space, SpaceVisibility } from './models.js'
+import {
+  CommentAnchor,
+  CommentThread,
+  Ok,
+  Page,
+  PageKind,
+  PageNode,
+  PageVersion,
+  RichDoc,
+  Space,
+  SpaceVisibility,
+} from './models.js'
 
 const ws = z.object({ workspaceId: WorkspaceId })
 const t = (...tags: string[]) => ({ tags })
@@ -139,6 +150,41 @@ export const quireContract = {
       .route({ method: 'POST', path: '/versions/{versionId}/restore', ...t('versions') })
       .input(ws.extend({ versionId: Id }))
       .output(PageVersion),
+  },
+
+  comments: {
+    /** Every open thread on a page, and optionally the resolved ones too. */
+    list: baseContract
+      .route({ method: 'GET', path: '/pages/{pageId}/comments', ...t('comments') })
+      .input(ws.extend({ pageId: Id, includeResolved: z.boolean().default(false) }))
+      .output(z.array(CommentThread)),
+    create: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/comments', ...t('comments') })
+      .input(
+        ws.extend({
+          pageId: Id,
+          body: RichDoc,
+          /** omit for a comment about the page rather than a piece of it */
+          anchor: CommentAnchor.nullable().default(null),
+          quotedText: z.string().max(2000).default(''),
+          /** reply to this comment; the thread is inferred from it */
+          parentId: Id.nullable().default(null),
+        }),
+      )
+      .output(CommentThread.shape.root),
+    update: baseContract
+      .route({ method: 'PATCH', path: '/comments/{commentId}', ...t('comments') })
+      .input(ws.extend({ commentId: Id, body: RichDoc }))
+      .output(CommentThread.shape.root),
+    remove: baseContract
+      .route({ method: 'DELETE', path: '/comments/{commentId}', ...t('comments') })
+      .input(ws.extend({ commentId: Id }))
+      .output(Ok),
+    /** Settle a thread. Resolving the root resolves the thread; it is not a per-reply state. */
+    resolve: baseContract
+      .route({ method: 'POST', path: '/comments/{commentId}/resolve', ...t('comments') })
+      .input(ws.extend({ commentId: Id, resolved: z.boolean().default(true) }))
+      .output(CommentThread),
   },
 
   publishing: {

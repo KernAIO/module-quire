@@ -4,6 +4,7 @@ import {
   customType,
   index,
   integer,
+  jsonb,
   pgSchema,
   text,
   timestamp,
@@ -27,6 +28,9 @@ export const schema = pgSchema('mod_quire')
 
 /** Yjs state is binary; drizzle has no `bytea`, so it is declared once here. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' })
+
+const jsonObject = (name: string) => jsonb(name).notNull().default(sql`'{}'::jsonb`)
+const uuidArray = (name: string) => uuid(name).array().notNull().default(sql`'{}'::uuid[]`)
 
 const id = () => uuid('id').primaryKey().default(sql`uuidv7()`)
 const ws = () => uuid('workspace_id').notNull()
@@ -146,5 +150,50 @@ export const pageVersions = schema.table(
   ],
 )
 
+/**
+ * A remark on a page, and the piece of text it is about.
+ *
+ * The anchor is a **Yjs relative position**, not a character offset. An offset names a place in a
+ * document that only exists while nobody else is typing: two words inserted above and the comment
+ * is attached to something it was never about. A relative position survives concurrent edits
+ * because it points at the same piece of content rather than the same index.
+ *
+ * `quotedText` is what the anchor pointed at when the comment was written. It is not a fallback for
+ * a lost anchor — it is what lets the interface say "this was about …" when the text it referred to
+ * has since been deleted, instead of showing a thread attached to nothing.
+ */
+export const comments = schema.table(
+  'comments',
+  {
+    id: id(),
+    workspaceId: ws(),
+    pageId: uuid('page_id').notNull(),
+    /** null for a top-level comment; otherwise the comment this one replies to */
+    parentId: uuid('parent_id'),
+    /**
+     * The comment that starts the thread — itself for a root. Denormalised so a page's threads can
+     * be read in one query rather than one per level.
+     */
+    threadId: uuid('thread_id').notNull(),
+    authorId: uuid('author_id'),
+    body: jsonObject('body'),
+    bodyText: text('body_text').notNull().default(''),
+    mentionIds: uuidArray('mention_ids'),
+    /** `{ from, to }` as encoded Yjs relative positions; null for a comment on the page as a whole */
+    anchor: jsonb('anchor'),
+    quotedText: text('quoted_text').notNull().default(''),
+    resolvedAt: ts('resolved_at'),
+    resolvedBy: uuid('resolved_by'),
+    editedAt: ts('edited_at'),
+    deletedAt: ts('deleted_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('comments_ws_page_idx').on(t.workspaceId, t.pageId, t.createdAt),
+    index('comments_ws_thread_idx').on(t.workspaceId, t.threadId, t.createdAt),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
-export const TENANT_TABLES = ['spaces', 'pages', 'page_versions'] as const
+export const TENANT_TABLES = ['spaces', 'pages', 'page_versions', 'comments'] as const

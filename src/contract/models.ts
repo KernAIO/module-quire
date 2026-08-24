@@ -113,4 +113,52 @@ export const PageVersion = z.object({
 })
 export type PageVersion = z.infer<typeof PageVersion>
 
+/**
+ * Where a comment is attached, as **Yjs relative positions**.
+ *
+ * Not character offsets: an offset names a place that only exists while nobody else is typing, and
+ * two words inserted above would move a comment onto text it was never about. A relative position
+ * points at the content rather than the index, so it survives concurrent editing — which is the
+ * whole reason a comment on a collaborative document is harder than a comment on a row.
+ */
+export const CommentAnchor = z.object({
+  /** base64 `Y.encodeRelativePosition` */
+  from: z.base64(),
+  to: z.base64(),
+})
+export type CommentAnchor = z.infer<typeof CommentAnchor>
+
+/** A Tiptap/ProseMirror document. Kept opaque here; the renderer is what knows its shape. */
+export const RichDoc = z.record(z.string(), z.unknown())
+
+export const Comment = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  pageId: Id,
+  parentId: Id.nullable(),
+  threadId: Id,
+  authorId: UserId.nullable(),
+  body: RichDoc,
+  bodyText: z.string(),
+  mentionIds: z.array(UserId),
+  /** null for a comment about the page rather than a piece of it */
+  anchor: CommentAnchor.nullable(),
+  /** what the anchor pointed at when it was written, so a thread whose text is gone still reads */
+  quotedText: z.string(),
+  resolvedAt: Timestamp.nullable(),
+  resolvedBy: UserId.nullable(),
+  editedAt: Timestamp.nullable(),
+  createdAt: Timestamp,
+})
+export type Comment = z.infer<typeof Comment>
+
+/** A root comment and its replies, which is how a page's margin is actually read. */
+export const CommentThread = z.object({
+  id: Id,
+  root: Comment,
+  replies: z.array(Comment),
+  resolved: z.boolean(),
+})
+export type CommentThread = z.infer<typeof CommentThread>
+
 export const Ok = z.object({ ok: z.literal(true) })

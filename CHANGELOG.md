@@ -1,5 +1,12 @@
 # @kernhq/module-quire
 
+## 0.4.1
+
+### Patch Changes
+
+- 3f6b975: Export the comment types from the client, so a margin panel can be typed without reaching into
+  `./contract`.
+
 ## 0.4.0
 
 ### Minor Changes

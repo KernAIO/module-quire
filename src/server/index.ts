@@ -24,7 +24,7 @@ export const quireModule = defineServerModule({
     name: 'Quire',
     version: packageVersion(import.meta.url),
     description: 'Spaces, nested pages and documents a team writes together',
-    icon: 'book-open',
+    icon: 'scroll-text',
     permissions: quirePermissions,
     capabilities: quireCapabilities,
     events: quireEvents,
@@ -34,7 +34,7 @@ export const quireModule = defineServerModule({
      */
     objectTypes: [
       { type: 'page', label: 'Page', icon: 'file-text', channelable: true },
-      { type: 'space', label: 'Space', icon: 'book-open' },
+      { type: 'space', label: 'Space', icon: 'scroll-text' },
     ],
   }),
   /** Attached so the developer panel can check the router against what was promised. */

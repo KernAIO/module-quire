@@ -1,6 +1,7 @@
+import { formatCollabDocument } from '@kernhq/contracts'
 import { createModuleClient, type KernClientOptions } from '@kernhq/sdk'
 import type { ContractRouterClient } from '@orpc/contract'
-import type { PageNode, QuireContract } from '../contract/index.js'
+import { MODULE_ID, type Page, type PageNode, type QuireContract } from '../contract/index.js'
 
 /**
  * The client half.
@@ -32,6 +33,22 @@ export {
   type SpaceVisibility,
 } from '../contract/index.js'
 export * from './rank.js'
+
+/**
+ * The name this page's prose is synchronised under, on the collab service.
+ *
+ * Exported here rather than left to the caller because the gateway parses it with the matching
+ * function from `@kernhq/contracts`, and a name it cannot parse is a rejected connection with no
+ * useful error. The module owns the naming of its own objects.
+ */
+export function pageDocumentName(page: { workspaceId: Page['workspaceId']; id: string }): string {
+  return formatCollabDocument({
+    workspaceId: page.workspaceId,
+    module: MODULE_ID,
+    type: 'page',
+    objectId: page.id,
+  })
+}
 
 /** The permission keys, so the app gates on a constant rather than a string it retyped. */
 export const QUIRE_PERMISSIONS = {

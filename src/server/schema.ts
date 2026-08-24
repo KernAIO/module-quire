@@ -1,5 +1,15 @@
 import { sql } from 'drizzle-orm'
-import { boolean, index, pgSchema, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import {
+  boolean,
+  customType,
+  index,
+  integer,
+  pgSchema,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core'
 
 /**
  * This module's tables, in its own Postgres schema.
@@ -14,6 +24,9 @@ import { boolean, index, pgSchema, text, timestamp, uniqueIndex, uuid } from 'dr
  *   drizzle-kit does not generate one.
  */
 export const schema = pgSchema('mod_quire')
+
+/** Yjs state is binary; drizzle has no `bytea`, so it is declared once here. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' })
 
 const id = () => uuid('id').primaryKey().default(sql`uuidv7()`)
 const ws = () => uuid('workspace_id').notNull()
@@ -94,5 +107,44 @@ export const pages = schema.table(
   ],
 )
 
+/**
+ * What a page looked like at a moment, and the bytes to put it back.
+ *
+ * This is the backbone of both halves of the draft model rather than a feature bolted beside it:
+ * a `page` serves `pages.published_version_id` to a reader, and a `live` doc serves the Y.Doc — one
+ * mechanism, two behaviours. Restoring, diffing and publishing all read from here.
+ */
+export const pageVersions = schema.table(
+  'page_versions',
+  {
+    id: id(),
+    workspaceId: ws(),
+    pageId: uuid('page_id').notNull(),
+    /**
+     * `auto` — taken on a quiet interval while somebody was writing.
+     * `publish` — what a reader is being served.
+     * `restore` — the result of putting an older version back; a restore is itself a version, so
+     *   the act of restoring is never the thing that loses work.
+     * `import` — the state a page arrived with.
+     */
+    kind: text('kind').notNull().default('auto'),
+    /** what somebody called it, when they named it on purpose */
+    label: text('label'),
+    /** `Y.encodeStateAsUpdate` — everything needed to reconstruct the document */
+    state: bytea('state').notNull(),
+    /** `Y.encodeSnapshot` — enough to render the difference against another version */
+    snapshot: bytea('snapshot'),
+    /** flattened prose, so a version list can show a line of it without decoding the CRDT */
+    text: text('text').notNull().default(''),
+    size: integer('size').notNull().default(0),
+    authorId: uuid('author_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('page_versions_ws_page_idx').on(t.workspaceId, t.pageId, t.createdAt),
+    index('page_versions_ws_created_idx').on(t.workspaceId, t.createdAt),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
-export const TENANT_TABLES = ['spaces', 'pages'] as const
+export const TENANT_TABLES = ['spaces', 'pages', 'page_versions'] as const

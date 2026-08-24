@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CollabAccess, CollabAccessInput, type Principal } from '@kernhq/contracts'
 import { KernError } from '@kernhq/kernel'
+import { and, eq } from 'drizzle-orm'
 import {
   MODULE_ID,
   quireCapabilities,
@@ -10,8 +11,17 @@ import {
   quirePermissions,
 } from '../contract/index.js'
 import { defineModule, defineServerModule, implement_, packageVersion } from './_impl.js'
-import { schema } from './schema.js'
+import { pages, schema } from './schema.js'
 import { quireServices } from './services/index.js'
+
+/**
+ * How long a page may go without an automatic version while somebody is writing in it.
+ *
+ * The collab service already throttles how often it publishes a snapshot event, so this is the
+ * second gate rather than the first: it decides how much work a restore can lose, not how much
+ * traffic the module sees.
+ */
+const AUTO_VERSION_INTERVAL_MS = 5 * 60_000
 
 /** These procedures are reachable only from another Kern service, never from a browser. */
 function requireService(principal: Principal): void {
@@ -42,6 +52,67 @@ export const quireModule = defineServerModule({
   schema,
   migrationsFolder: join(dirname(fileURLToPath(import.meta.url)), '../../migrations'),
   router: implement_,
+
+  subscriptions: {
+    /**
+     * A document was edited. Three things follow from that, and none of them can be done from the
+     * browser.
+     *
+     * The flattened prose is mirrored onto the row, so the tree and search can read a page without
+     * decoding a CRDT. A `page` whose draft has moved on from what readers are served is marked as
+     * having unpublished changes — which is the whole difference between a page and a live doc. And
+     * a version is taken if the last one is old enough, so history accumulates while somebody
+     * writes rather than only when they remember to press something.
+     */
+    'collab.document.updated': async (event, kernel) => {
+      const payload = event.payload as {
+        workspaceId: string
+        module: string
+        type: string
+        objectId: string
+        text: string
+      }
+      if (payload.module !== MODULE_ID || payload.type !== 'page') return
+
+      const svc = quireServices(kernel)
+      await kernel.database.withWorkspace(payload.workspaceId, async (tx) => {
+        const [page] = await tx
+          .select()
+          .from(pages)
+          .where(and(eq(pages.workspaceId, payload.workspaceId), eq(pages.id, payload.objectId)))
+          .limit(1)
+        // A document for a page that has been purged; the row is gone and so should the document be.
+        if (!page) return
+
+        await tx
+          .update(pages)
+          .set({
+            text: payload.text,
+            // A `page` diverges from what readers see; a `live` doc has nothing to diverge from.
+            hasUnpublishedChanges:
+              page.kind === 'page' && page.publishedVersionId !== null ? true : page.hasUnpublishedChanges,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(pages.workspaceId, payload.workspaceId), eq(pages.id, payload.objectId)))
+
+        const last = await svc.versions.lastCapturedAt(tx, payload.workspaceId, payload.objectId)
+        if (!last || Date.now() - last.getTime() > AUTO_VERSION_INTERVAL_MS) {
+          await svc.versions.capture(tx, payload.workspaceId, payload.objectId, {
+            kind: 'auto',
+            label: null,
+            authorId: null,
+          })
+        }
+      })
+
+      await kernel.realtime.change(payload.workspaceId, {
+        module: MODULE_ID,
+        entity: 'page',
+        id: payload.objectId,
+        op: 'updated',
+      })
+    },
+  },
 
   procedures: {
     /**

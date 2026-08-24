@@ -2,11 +2,13 @@ import type { Kernel } from '@kernhq/kernel'
 import { quireAccess } from './access.js'
 import { quirePages } from './pages.js'
 import { quireSpaces } from './spaces.js'
+import { quireVersions } from './versions.js'
 
 export interface QuireServices {
   access: ReturnType<typeof quireAccess>
   spaces: ReturnType<typeof quireSpaces>
   pages: ReturnType<typeof quirePages>
+  versions: ReturnType<typeof quireVersions>
 }
 
 const cache = new WeakMap<Kernel, QuireServices>()
@@ -20,6 +22,7 @@ export function quireServices(kernel: Kernel): QuireServices {
     access,
     spaces: quireSpaces(access),
     pages: quirePages(access),
+    versions: quireVersions(kernel, access),
   }
   cache.set(kernel, services)
   return services
@@ -28,3 +31,4 @@ export function quireServices(kernel: Kernel): QuireServices {
 export * from './access.js'
 export * from './pages.js'
 export * from './spaces.js'
+export * from './versions.js'

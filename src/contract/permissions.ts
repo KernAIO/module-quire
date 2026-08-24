@@ -49,6 +49,14 @@ export const quirePermissions = definePermissions([
     dangerous: false,
   },
   {
+    key: 'quire.page.publish',
+    label: 'Publish pages',
+    description: 'Decide which version readers and any public site are served',
+    scope: 'space',
+    defaultRoles: ['owner', 'admin', 'member'],
+    dangerous: false,
+  },
+  {
     key: 'quire.page.delete',
     label: 'Delete pages permanently',
     description: 'Empty the trash. A purged page and its history cannot be recovered.',

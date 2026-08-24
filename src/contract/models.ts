@@ -90,4 +90,27 @@ export const PageNode = z.object({
 })
 export type PageNode = z.infer<typeof PageNode>
 
+/**
+ * How a version came to exist. `restore` matters: putting an older version back writes a new
+ * version rather than rewinding, so restoring is never itself the thing that loses work.
+ */
+export const VersionKind = z.enum(['auto', 'publish', 'restore', 'import'])
+export type VersionKind = z.infer<typeof VersionKind>
+
+export const PageVersion = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  pageId: Id,
+  kind: VersionKind,
+  label: z.string().max(120).nullable(),
+  /** the first line or so of the prose, so a list reads without loading a document */
+  preview: z.string(),
+  size: z.number().int().nonnegative(),
+  authorId: UserId.nullable(),
+  createdAt: Timestamp,
+  /** whether this is the version a reader is currently served */
+  published: z.boolean(),
+})
+export type PageVersion = z.infer<typeof PageVersion>
+
 export const Ok = z.object({ ok: z.literal(true) })

@@ -1,6 +1,7 @@
 import {
   defineModule,
   defineServerModule,
+  KernError,
   type Kernel,
   packageVersion,
   type RequestContext,
@@ -10,7 +11,8 @@ import {
 import { implement } from '@orpc/server'
 import { MODULE_ID, quireContract, quireEvents } from '../contract/index.js'
 import { quireServices } from './services/index.js'
-import { documentNameOf } from './services/pages.js'
+import { documentNameOf, toPage } from './services/pages.js'
+import { toVersion } from './services/versions.js'
 
 /**
  * The router, kept apart from `index.ts` so `module.test.ts` can walk it without booting a kernel.
@@ -35,17 +37,13 @@ export function implement_(kernel: Kernel) {
   ) => kernel.database.withWorkspace(workspaceId, fn, { userId: context.principal.userId })
 
   /** Both, every time: the event for anything that reacts later, the change for a screen open now. */
-  const announce = async (
+  const announce = (
     workspaceId: string,
-    actorId: string | null,
     entity: string,
     id: string,
     op: 'created' | 'updated' | 'deleted',
     scope?: Record<string, string>,
-  ) => {
-    await kernel.realtime.change(workspaceId, { module: MODULE_ID, entity, id, op, scope })
-    void actorId
-  }
+  ) => kernel.realtime.change(workspaceId, { module: MODULE_ID, entity, id, op, scope })
 
   return os.router({
     spaces: {
@@ -74,7 +72,7 @@ export function implement_(kernel: Kernel) {
           { spaceId: space.id, workspaceId: input.workspaceId },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        await announce(input.workspaceId, context.principal.userId, 'space', space.id, 'created')
+        await announce(input.workspaceId, 'space', space.id, 'created')
         return space
       }),
 
@@ -90,7 +88,7 @@ export function implement_(kernel: Kernel) {
           { spaceId, workspaceId },
           { workspaceId, actorId: context.principal.userId },
         )
-        await announce(workspaceId, context.principal.userId, 'space', spaceId, 'updated')
+        await announce(workspaceId, 'space', spaceId, 'updated')
         return space
       }),
 
@@ -112,7 +110,7 @@ export function implement_(kernel: Kernel) {
             { spaceId: input.spaceId, workspaceId: input.workspaceId, archived: input.archived },
             { workspaceId: input.workspaceId, actorId: context.principal.userId },
           )
-          await announce(input.workspaceId, context.principal.userId, 'space', input.spaceId, 'updated')
+          await announce(input.workspaceId, 'space', input.spaceId, 'updated')
           return space
         }),
     },
@@ -168,7 +166,7 @@ export function implement_(kernel: Kernel) {
           { pageId: page.id, spaceId: page.spaceId, workspaceId: input.workspaceId },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        await announce(input.workspaceId, context.principal.userId, 'page', page.id, 'created', {
+        await announce(input.workspaceId, 'page', page.id, 'created', {
           spaceId: page.spaceId,
         })
         return page
@@ -186,7 +184,7 @@ export function implement_(kernel: Kernel) {
           { pageId, spaceId: page.spaceId, workspaceId },
           { workspaceId, actorId: context.principal.userId },
         )
-        await announce(workspaceId, context.principal.userId, 'page', pageId, 'updated', {
+        await announce(workspaceId, 'page', pageId, 'updated', {
           spaceId: page.spaceId,
         })
         return page
@@ -215,7 +213,7 @@ export function implement_(kernel: Kernel) {
           },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        await announce(input.workspaceId, context.principal.userId, 'page', page.id, 'updated', {
+        await announce(input.workspaceId, 'page', page.id, 'updated', {
           spaceId: page.spaceId,
         })
         return page
@@ -237,7 +235,7 @@ export function implement_(kernel: Kernel) {
           },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        await announce(input.workspaceId, context.principal.userId, 'page', page.id, 'updated', {
+        await announce(input.workspaceId, 'page', page.id, 'updated', {
           spaceId: page.spaceId,
         })
         return page
@@ -257,8 +255,7 @@ export function implement_(kernel: Kernel) {
             { pageId: input.pageId, spaceId, workspaceId: input.workspaceId, count: ids.length },
             { workspaceId: input.workspaceId, actorId: context.principal.userId },
           )
-          for (const id of ids)
-            await announce(input.workspaceId, context.principal.userId, 'page', id, 'updated', { spaceId })
+          for (const id of ids) await announce(input.workspaceId, 'page', id, 'updated', { spaceId })
           return { ok: true as const, count: ids.length }
         }),
 
@@ -273,7 +270,7 @@ export function implement_(kernel: Kernel) {
           { pageId: page.id, spaceId: page.spaceId, workspaceId: input.workspaceId },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        await announce(input.workspaceId, context.principal.userId, 'page', page.id, 'updated', {
+        await announce(input.workspaceId, 'page', page.id, 'updated', {
           spaceId: page.spaceId,
         })
         return page
@@ -305,10 +302,107 @@ export function implement_(kernel: Kernel) {
           { pageId: input.pageId, spaceId, workspaceId: input.workspaceId, pageIds: ids },
           { workspaceId: input.workspaceId, actorId: context.principal.userId },
         )
-        for (const id of ids)
-          await announce(input.workspaceId, context.principal.userId, 'page', id, 'deleted', { spaceId })
+        for (const id of ids) await announce(input.workspaceId, 'page', id, 'deleted', { spaceId })
         return { ok: true as const, count: ids.length }
       }),
+    },
+
+    versions: {
+      list: scoped.versions.list.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          return svc.versions.list(tx, input.workspaceId, input.pageId, input.limit, input.cursor ?? null)
+        }),
+      ),
+
+      get: scoped.versions.get.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const row = await svc.versions.row(tx, input.workspaceId, input.versionId)
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, row.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          const page = await svc.access.pageRow(tx, input.workspaceId, row.pageId)
+          return { ...toVersion(row, page.publishedVersionId), text: row.text }
+        }),
+      ),
+
+      create: scoped.versions.create.use(requires('quire.page.edit')).handler(async ({ input, context }) => {
+        const version = await run(context, input.workspaceId, async (tx) => {
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+          const row = await svc.versions.capture(tx, input.workspaceId, input.pageId, {
+            kind: 'auto',
+            label: input.label,
+            authorId: context.principal.userId,
+          })
+          if (!row) throw KernError.badRequest('There is nothing written to save a version of')
+          const page = await svc.access.pageRow(tx, input.workspaceId, input.pageId)
+          return toVersion(row, page.publishedVersionId)
+        })
+        await announce(input.workspaceId, 'page', input.pageId, 'updated')
+        return version
+      }),
+
+      restore: scoped.versions.restore
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          const { version, pageId } = await run(context, input.workspaceId, async (tx) => {
+            const row = await svc.versions.row(tx, input.workspaceId, input.versionId)
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, row.pageId)
+            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            const restored = await svc.versions.restore(
+              tx,
+              context.principal,
+              input.workspaceId,
+              input.versionId,
+            )
+            const page = await svc.access.pageRow(tx, input.workspaceId, row.pageId)
+            return { version: toVersion(restored, page.publishedVersionId), pageId: row.pageId }
+          })
+          await kernel.emit(
+            quireEvents.pageRestoredVersion,
+            { pageId, workspaceId: input.workspaceId, versionId: input.versionId },
+            { workspaceId: input.workspaceId, actorId: context.principal.userId },
+          )
+          await announce(input.workspaceId, 'page', pageId, 'updated')
+          return version
+        }),
+    },
+
+    publishing: {
+      publish: scoped.publishing.publish
+        .use(requires('quire.page.publish'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+            await svc.access.requirePage(context.principal, 'quire.page.publish', input.workspaceId, scope)
+            return svc.versions.publish(tx, context.principal, input.workspaceId, input.pageId, input.label)
+          })
+          await kernel.emit(
+            quireEvents.pagePublished,
+            {
+              pageId: input.pageId,
+              spaceId: row.spaceId,
+              workspaceId: input.workspaceId,
+              versionId: row.publishedVersionId ?? '',
+            },
+            { workspaceId: input.workspaceId, actorId: context.principal.userId },
+          )
+          await announce(input.workspaceId, 'page', input.pageId, 'updated', { spaceId: row.spaceId })
+          return toPage(row)
+        }),
+
+      revert: scoped.publishing.revert
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            return svc.versions.revert(tx, context.principal, input.workspaceId, input.pageId)
+          })
+          await announce(input.workspaceId, 'page', input.pageId, 'updated', { spaceId: row.spaceId })
+          return toPage(row)
+        }),
     },
   })
 }

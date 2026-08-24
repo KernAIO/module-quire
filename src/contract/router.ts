@@ -1,6 +1,6 @@
 import { baseContract, Id, PageInput, page, WorkspaceId } from '@kernhq/contracts'
 import { z } from 'zod'
-import { Ok, Page, PageKind, PageNode, Space, SpaceVisibility } from './models.js'
+import { Ok, Page, PageKind, PageNode, PageVersion, Space, SpaceVisibility } from './models.js'
 
 const ws = z.object({ workspaceId: WorkspaceId })
 const t = (...tags: string[]) => ({ tags })
@@ -114,6 +114,44 @@ export const quireContract = {
       .route({ method: 'DELETE', path: '/pages/{pageId}', ...t('pages') })
       .input(ws.extend({ pageId: Id }))
       .output(z.object({ ok: z.literal(true), count: z.number().int().nonnegative() })),
+  },
+
+  versions: {
+    list: baseContract
+      .route({ method: 'GET', path: '/pages/{pageId}/versions', ...t('versions') })
+      .input(ws.extend({ pageId: Id }).extend(PageInput.shape))
+      .output(page(PageVersion)),
+    /** The prose of one version, rendered as text — enough to read it and to diff it. */
+    get: baseContract
+      .route({ method: 'GET', path: '/versions/{versionId}', ...t('versions') })
+      .input(ws.extend({ versionId: Id }))
+      .output(PageVersion.extend({ text: z.string() })),
+    /** Take one now, and give it a name. */
+    create: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/versions', ...t('versions') })
+      .input(ws.extend({ pageId: Id, label: z.string().min(1).max(120).nullable().default(null) }))
+      .output(PageVersion),
+    /**
+     * Put an older version back. It is applied to the live document rather than written behind the
+     * people editing it, and the state it replaced is kept as a version of its own first.
+     */
+    restore: baseContract
+      .route({ method: 'POST', path: '/versions/{versionId}/restore', ...t('versions') })
+      .input(ws.extend({ versionId: Id }))
+      .output(PageVersion),
+  },
+
+  publishing: {
+    /** Make what is written now the version readers are served. Only meaningful for a `page`. */
+    publish: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/publish', ...t('publishing') })
+      .input(ws.extend({ pageId: Id, label: z.string().min(1).max(120).nullable().default(null) }))
+      .output(Page),
+    /** Throw the draft away and go back to what readers can already see. */
+    revert: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/revert', ...t('publishing') })
+      .input(ws.extend({ pageId: Id }))
+      .output(Page),
   },
 } as const
 export type QuireContract = typeof quireContract

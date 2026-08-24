@@ -56,6 +56,54 @@ const inWs =
     kernel.database.withWorkspace(workspaceId, fn, { userId: actor?.userId ?? null })
 const run = <T>(fn: (tx: Tx) => Promise<T>) => inWs(WS_A, alice())(fn)
 
+/**
+ * A stand-in for the collab service.
+ *
+ * The real one is tested in its own repository against real sockets; what matters here is that the
+ * module asks it the right questions and does the right thing with the answers. The stub keeps one
+ * "document" per name as a string, which is enough to tell a replace from a merge — the distinction
+ * the whole restore path turns on.
+ */
+const documents = new Map<string, string>()
+function registerCollabStub(k: Kernel) {
+  const b64 = (v: string) => Buffer.from(v).toString('base64')
+  k.broker.register('collab', {
+    'document.state': {
+      handler: async (input: { name: string }) => ({
+        name: input.name,
+        state: documents.has(input.name) ? b64(documents.get(input.name)!) : null,
+        size: documents.get(input.name)?.length ?? 0,
+        updatedAt: documents.has(input.name) ? new Date().toISOString() : null,
+      }),
+    },
+    'document.snapshot': {
+      handler: async (input: { name: string }) => {
+        if (!documents.has(input.name)) throw new Error('no document')
+        return { snapshot: b64(`snap:${documents.get(input.name)}`), state: b64(documents.get(input.name)!) }
+      },
+    },
+    'document.apply': {
+      handler: async (input: { name: string; update: string }) => {
+        const incoming = Buffer.from(input.update, 'base64').toString()
+        documents.set(input.name, `${documents.get(input.name) ?? ''}${incoming}`)
+        return { ok: true as const, size: documents.get(input.name)!.length }
+      },
+    },
+    'document.replace': {
+      handler: async (input: { name: string; state: string }) => {
+        documents.set(input.name, Buffer.from(input.state, 'base64').toString())
+        return { ok: true as const, size: documents.get(input.name)!.length }
+      },
+    },
+    'document.delete': {
+      handler: async (input: { name: string }) => {
+        documents.delete(input.name)
+        return { ok: true as const }
+      },
+    },
+  })
+}
+
 function registerCoreStubs(k: Kernel) {
   k.broker.register('core', {
     'activity.record': { handler: async () => ({ ok: true }) },
@@ -125,6 +173,7 @@ beforeAll(async () => {
     },
   })
   registerCoreStubs(kernel)
+  registerCollabStub(kernel)
   await kernel.start()
   svc = quireServices(kernel)
 
@@ -170,7 +219,7 @@ describe('migrations', () => {
         where relnamespace = 'mod_quire'::regnamespace and relkind = 'r'
         order by relname`)
     const tables = res.rows.filter((r) => r.relname !== '__migrations')
-    expect(tables.map((r) => r.relname)).toEqual(['pages', 'spaces'])
+    expect(tables.map((r) => r.relname)).toEqual(['page_versions', 'pages', 'spaces'])
     for (const t of tables) {
       expect(t.relrowsecurity, `${t.relname} has RLS off`).toBe(true)
       expect(t.relforcerowsecurity, `${t.relname} does not force RLS`).toBe(true)
@@ -402,6 +451,117 @@ describe('trash', () => {
     const purged = await run((tx) => svc.pages.purge(tx, WS_A, parent.id))
     expect(purged.ids).toHaveLength(2)
     await expect(run((tx) => svc.pages.get(tx, WS_A, parent.id))).rejects.toThrow()
+  })
+})
+
+describe('versions, drafts and publishing', () => {
+  const docName = (pageId: string) => `ws:${WS_A}:quire:page:${pageId}`
+
+  /** Stand in for somebody typing: the stub's "document" is just its text. */
+  const write = (pageId: string, text: string) => {
+    documents.set(docName(pageId), text)
+    return run((tx) =>
+      kernel.database.db
+        .execute(`update mod_quire.pages set text = '${text.replace(/'/g, "''")}' where id = '${pageId}'`)
+        .then(() => undefined),
+    )
+  }
+
+  it('takes a version of what is written, and lists it', async () => {
+    const page = await newPage({ title: 'Versioned' })
+    await write(page.id, 'the first draft')
+
+    const v = await run((tx) =>
+      svc.versions.capture(tx, WS_A, page.id, { kind: 'auto', label: null, authorId: ALICE }),
+    )
+    expect(v).not.toBeNull()
+
+    const listed = await run((tx) => svc.versions.list(tx, WS_A, page.id, 20, null))
+    expect(listed.items).toHaveLength(1)
+    expect(listed.items[0]?.preview).toBe('the first draft')
+    expect(listed.items[0]?.published, 'nothing is published yet').toBe(false)
+  })
+
+  it('takes no version of a page nobody has written in', async () => {
+    const page = await newPage({ title: 'Never opened' })
+    const v = await run((tx) =>
+      svc.versions.capture(tx, WS_A, page.id, { kind: 'auto', label: null, authorId: ALICE }),
+    )
+    expect(v, 'an empty row in the history claims somebody saved something').toBeNull()
+  })
+
+  it('publishes what is written, and says so', async () => {
+    const page = await newPage({ title: 'To publish' })
+    await write(page.id, 'ready for readers')
+
+    const published = await run((tx) => svc.versions.publish(tx, alice(), WS_A, page.id, 'v1'))
+    expect(published.publishedVersionId).not.toBeNull()
+    expect(published.hasUnpublishedChanges).toBe(false)
+
+    const listed = await run((tx) => svc.versions.list(tx, WS_A, page.id, 20, null))
+    const live = listed.items.find((v) => v.published)
+    expect(live?.label).toBe('v1')
+  })
+
+  it('refuses to publish a live doc, which has nothing to publish', async () => {
+    const page = await newPage({ title: 'Always live', kind: 'live' })
+    await write(page.id, 'typing')
+    await expect(run((tx) => svc.versions.publish(tx, alice(), WS_A, page.id, null))).rejects.toThrow(
+      /live doc is always live/i,
+    )
+  })
+
+  it('replaces the document on revert rather than merging the draft back in', async () => {
+    const page = await newPage({ title: 'Reverted' })
+    await write(page.id, 'the published text')
+    await run((tx) => svc.versions.publish(tx, alice(), WS_A, page.id, null))
+
+    await write(page.id, 'a draft nobody approved')
+    const reverted = await run((tx) => svc.versions.revert(tx, alice(), WS_A, page.id))
+
+    expect(reverted.hasUnpublishedChanges).toBe(false)
+    expect(
+      documents.get(docName(page.id)),
+      'the draft was merged in rather than replaced — every discarded paragraph would come back',
+    ).toBe('the published text')
+  })
+
+  it('keeps the draft it discarded, so revert cannot lose an afternoon', async () => {
+    const page = await newPage({ title: 'Revert keeps' })
+    await write(page.id, 'published')
+    await run((tx) => svc.versions.publish(tx, alice(), WS_A, page.id, null))
+    await write(page.id, 'the discarded draft')
+    await run((tx) => svc.versions.revert(tx, alice(), WS_A, page.id))
+
+    const listed = await run((tx) => svc.versions.list(tx, WS_A, page.id, 20, null))
+    expect(listed.items.map((v) => v.preview)).toContain('the discarded draft')
+  })
+
+  it('restores an older version, and records the restore as a version of its own', async () => {
+    const page = await newPage({ title: 'Restored' })
+    await write(page.id, 'the good version')
+    const good = await run((tx) =>
+      svc.versions.capture(tx, WS_A, page.id, { kind: 'auto', label: 'good', authorId: ALICE }),
+    )
+    await write(page.id, 'the bad rewrite')
+
+    const restored = await run((tx) => svc.versions.restore(tx, alice(), WS_A, good!.id))
+    expect(restored.kind).toBe('restore')
+    expect(documents.get(docName(page.id))).toBe('the good version')
+
+    const listed = await run((tx) => svc.versions.list(tx, WS_A, page.id, 20, null))
+    expect(
+      listed.items.map((v) => v.preview),
+      'the state that was replaced has to survive, or restoring is how you lose work',
+    ).toContain('the bad rewrite')
+  })
+
+  it('refuses to revert a page that has never been published', async () => {
+    const page = await newPage({ title: 'Never published' })
+    await write(page.id, 'draft only')
+    await expect(run((tx) => svc.versions.revert(tx, alice(), WS_A, page.id))).rejects.toThrow(
+      /never been published/i,
+    )
   })
 })
 

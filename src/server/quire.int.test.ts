@@ -219,7 +219,18 @@ describe('migrations', () => {
         where relnamespace = 'mod_quire'::regnamespace and relkind = 'r'
         order by relname`)
     const tables = res.rows.filter((r) => r.relname !== '__migrations')
-    expect(tables.map((r) => r.relname)).toEqual(['comments', 'page_versions', 'pages', 'spaces'])
+    // Deliberately the exact list rather than a subset: a new table that forgets its policy should
+    // fail here, which is what this assertion is for.
+    expect(tables.map((r) => r.relname)).toEqual([
+      'comments',
+      'databases',
+      'page_versions',
+      'pages',
+      'properties',
+      'relations',
+      'spaces',
+      'views',
+    ])
     for (const t of tables) {
       expect(t.relrowsecurity, `${t.relname} has RLS off`).toBe(true)
       expect(t.relforcerowsecurity, `${t.relname} does not force RLS`).toBe(true)

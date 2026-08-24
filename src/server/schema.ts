@@ -195,5 +195,109 @@ export const comments = schema.table(
   ],
 )
 
+/**
+ * A table of pages with typed columns.
+ *
+ * A database is not a second kind of object beside a page: it *is* a page whose body renders a view
+ * instead of prose, and each of its rows is a page too. That is what makes a row openable,
+ * commentable, versioned and searchable for free, rather than needing all of it again.
+ */
+export const databases = schema.table(
+  'databases',
+  {
+    id: id(),
+    workspaceId: ws(),
+    spaceId: uuid('space_id').notNull(),
+    /** the page whose body this database is */
+    pageId: uuid('page_id').notNull(),
+    name: text('name').notNull().default(''),
+    description: text('description').notNull().default(''),
+    /** an inline database lives inside another page's prose rather than owning a page */
+    inline: boolean('inline').notNull().default(false),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('databases_ws_page_idx').on(t.workspaceId, t.pageId)],
+)
+
+/**
+ * A column.
+ *
+ * `config` carries whatever the type needs — the options of a select, the target of a relation, the
+ * expression of a formula — because a column of `jsonb` is the difference between adding a property
+ * type and adding a migration.
+ */
+export const properties = schema.table(
+  'properties',
+  {
+    id: id(),
+    workspaceId: ws(),
+    databaseId: uuid('database_id').notNull(),
+    /** stable across renames; this is what a row's `props` is keyed by */
+    key: text('key').notNull(),
+    name: text('name').notNull(),
+    type: text('type').notNull(),
+    config: jsonObject('config'),
+    position: text('position').notNull(),
+    hidden: boolean('hidden').notNull().default(false),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('properties_db_key_uq').on(t.workspaceId, t.databaseId, t.key),
+    index('properties_ws_db_idx').on(t.workspaceId, t.databaseId, t.position),
+  ],
+)
+
+/** A saved way of looking at a database: which rows, in what order, drawn how. */
+export const views = schema.table(
+  'views',
+  {
+    id: id(),
+    workspaceId: ws(),
+    databaseId: uuid('database_id').notNull(),
+    name: text('name').notNull(),
+    kind: text('kind').notNull().default('table'),
+    /** filters, sorts, grouping, visible properties, column widths, the date property for a calendar */
+    config: jsonObject('config'),
+    position: text('position').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('views_ws_db_idx').on(t.workspaceId, t.databaseId, t.position)],
+)
+
+/**
+ * One end of a relation between two rows.
+ *
+ * A join table rather than an array in `props`, because a relation is symmetric: setting it from
+ * one side has to be visible from the other, and a rollup reads it from whichever side asked.
+ */
+export const relations = schema.table(
+  'relations',
+  {
+    id: id(),
+    workspaceId: ws(),
+    propertyId: uuid('property_id').notNull(),
+    fromPageId: uuid('from_page_id').notNull(),
+    toPageId: uuid('to_page_id').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('relations_uq').on(t.workspaceId, t.propertyId, t.fromPageId, t.toPageId),
+    index('relations_ws_from_idx').on(t.workspaceId, t.fromPageId),
+    index('relations_ws_to_idx').on(t.workspaceId, t.toPageId),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
-export const TENANT_TABLES = ['spaces', 'pages', 'page_versions', 'comments'] as const
+export const TENANT_TABLES = [
+  'spaces',
+  'pages',
+  'page_versions',
+  'comments',
+  'databases',
+  'properties',
+  'views',
+  'relations',
+] as const

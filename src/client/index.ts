@@ -24,6 +24,9 @@ export function createQuireClient(opts: KernClientOptions): QuireApi {
 }
 
 export {
+  type Comment,
+  type CommentAnchor,
+  type CommentThread,
   MODULE_ID,
   type Page,
   type PageKind,

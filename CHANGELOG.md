@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.7.3
+
+### Patch Changes
+
+- Merge remote-tracking branch 'origin/main'
+
 ## 0.7.2
 
 ### Patch Changes

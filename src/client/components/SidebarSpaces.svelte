@@ -27,9 +27,20 @@ import PageTreeRow from './PageTreeRow.svelte'
 const api = getQuireApi()
 const client = useQueryClient()
 
-const workspaceSlug = $derived(navigation.workspaceSlug)
-const workspace = $derived(session.workspaces.find((w) => w.slug === workspaceSlug))
-const workspaceId = $derived(workspace?.id ?? '')
+/**
+ * The shell passes these — `SidebarProps` — and they are the ones to use.
+ *
+ * Reading `navigation` here instead looks equivalent and is not: the shell fills that singleton
+ * from an `$effect`, which runs *after* the first render, so the sidebar's first paint would query
+ * with an empty workspace id and show nothing.
+ */
+interface Props {
+  workspaceId: string
+  workspaceSlug: string
+  pathname: string
+  segment: string
+}
+const { workspaceId, workspaceSlug }: Props = $props()
 
 const spaceKeyInUrl = $derived(navigation.params.space ?? null)
 const activePageId = $derived(navigation.params.page ?? null)

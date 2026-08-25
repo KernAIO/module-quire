@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.7.2
+
+### Patch Changes
+
+- chore: refresh the lockfile for the changesets dependency
+
 ## 0.7.1
 
 ### Patch Changes

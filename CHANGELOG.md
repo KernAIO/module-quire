@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.7.1
+
+### Patch Changes
+
+- fix(deps): reach the framework that was just published
+
 ## 0.7.0
 
 ### Minor Changes

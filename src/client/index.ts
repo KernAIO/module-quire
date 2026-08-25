@@ -55,16 +55,6 @@ export function pageDocumentName(page: { workspaceId: Page['workspaceId']; id: s
   })
 }
 
-/** The permission keys, so the app gates on a constant rather than a string it retyped. */
-export const QUIRE_PERMISSIONS = {
-  spaceView: 'quire.space.view',
-  spaceManage: 'quire.space.manage',
-  pageView: 'quire.page.view',
-  pageCreate: 'quire.page.create',
-  pageEdit: 'quire.page.edit',
-  pageDelete: 'quire.page.delete',
-} as const
-
 /**
  * Build the sidebar tree from the flat, position-ordered list `pages.tree` returns.
  *
@@ -87,3 +77,7 @@ export function buildPageTree(nodes: readonly PageNode[]): PageTreeNode[] {
   }
   return roots
 }
+export { __setQuireApi, getQuireApi } from './api-instance.js'
+export { type QuireMessageKey, quireMessageBundles, t } from './i18n.js'
+export { quireClientModule, quireClientModule as default } from './module.js'
+export { canQuire, QUIRE_PERMISSIONS, type QuirePermission } from './permissions.js'

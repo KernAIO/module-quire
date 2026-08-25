@@ -117,6 +117,20 @@ describe('functions', () => {
   })
 })
 
+describe('the AST is data, not a promise', () => {
+  it('does not make an if node thenable', async () => {
+    // An object with a `then` property is thenable: `await` calls it as a promise. This node's
+    // `then` would have been an AST node rather than a function, so returning one from an async
+    // function would silently resolve to the wrong value — with no error where the mistake is.
+    const ast = parseFormula('if(true, 1, 2)')
+    expect(Object.hasOwn(ast, 'then'), 'an if node must never carry a `then`').toBe(false)
+
+    const wrapped = await (async () => ast)()
+    expect(wrapped, 'awaiting the node changed it into something else').toEqual(ast)
+    expect(await Promise.resolve(ast)).toEqual(ast)
+  })
+})
+
 describe('dependencies', () => {
   it('reports every property a formula reads, so a change recomputes only what depends on it', () => {
     const ast = parseFormula('if(prop("A") > 1, prop("B"), prop("C") + prop("A"))')

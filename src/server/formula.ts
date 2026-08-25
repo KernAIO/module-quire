@@ -19,7 +19,16 @@ export type Ast =
   | { kind: 'unary'; op: '-' | 'not'; operand: Ast }
   | { kind: 'binary'; op: string; left: Ast; right: Ast }
   | { kind: 'call'; name: string; args: Ast[] }
-  | { kind: 'if'; cond: Ast; then: Ast; otherwise: Ast }
+  /**
+   * Deliberately **not** named `then`/`else`.
+   *
+   * An object with a `then` property is *thenable*: `await` and `Promise.resolve()` call it as a
+   * promise. This node's `then` would be an AST node rather than a function, so the moment one of
+   * these is returned from an `async` function the runtime stops treating it as data — silently,
+   * with no error where the mistake is. `consequent`/`alternate` is the standard naming and costs
+   * nothing.
+   */
+  | { kind: 'if'; cond: Ast; consequent: Ast; alternate: Ast }
 
 export class FormulaError extends Error {}
 
@@ -183,7 +192,7 @@ export function parseFormula(input: string): Ast {
         return { kind: 'unary', op: 'not', operand: args[0] ?? { kind: 'literal', value: null } }
       if (name === 'if') {
         if (args.length !== 3) throw new FormulaError('if() takes a condition and two results')
-        return { kind: 'if', cond: args[0]!, then: args[1]!, otherwise: args[2]! }
+        return { kind: 'if', cond: args[0]!, consequent: args[1]!, alternate: args[2]! }
       }
       if (name === 'prop') {
         const arg = args[0]
@@ -343,7 +352,7 @@ export function evaluateFormula(ast: Ast, ctx: FormulaContext, depth = 0): Formu
     case 'unary':
       return ast.op === '-' ? -num(evaluate(ast.operand)) : !bool(evaluate(ast.operand))
     case 'if':
-      return bool(evaluate(ast.cond)) ? evaluate(ast.then) : evaluate(ast.otherwise)
+      return bool(evaluate(ast.cond)) ? evaluate(ast.consequent) : evaluate(ast.alternate)
     case 'call': {
       const fn = FUNCTIONS[ast.name]
       if (!fn) throw new FormulaError(`Unknown function: ${ast.name}`)
@@ -404,8 +413,8 @@ export function formulaDependencies(ast: Ast, out = new Set<string>()): Set<stri
       break
     case 'if':
       formulaDependencies(ast.cond, out)
-      formulaDependencies(ast.then, out)
-      formulaDependencies(ast.otherwise, out)
+      formulaDependencies(ast.consequent, out)
+      formulaDependencies(ast.alternate, out)
       break
     case 'call':
       for (const arg of ast.args) formulaDependencies(arg, out)

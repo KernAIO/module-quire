@@ -733,6 +733,267 @@ describe('comments', () => {
   })
 })
 
+describe('databases', () => {
+  let dbId: string
+  let dbSpace: string
+
+  const mkDatabase = async (name: string) => {
+    const space = await run((tx) =>
+      svc.spaces.create(tx, alice(), WS_A, {
+        key: `db-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 7)}`,
+        name,
+        description: '',
+        icon: null,
+        visibility: 'open',
+      }),
+    )
+    const host = await run((tx) =>
+      svc.pages.create(tx, alice(), WS_A, {
+        spaceId: space.id,
+        parentId: null,
+        title: name,
+        kind: 'page',
+        icon: null,
+        afterId: null,
+      }),
+    )
+    const db = await run((tx) =>
+      svc.databases.create(tx, alice(), WS_A, {
+        spaceId: space.id,
+        pageId: host.id,
+        name,
+        inline: false,
+      }),
+    )
+    return { db, space }
+  }
+
+  const addRow = (
+    databaseId: string,
+    spaceId: string,
+    parentId: string,
+    title: string,
+    props: Record<string, unknown>,
+  ) =>
+    run(async (tx) => {
+      const created = await svc.pages.create(tx, alice(), WS_A, {
+        spaceId,
+        parentId,
+        title,
+        kind: 'page',
+        icon: null,
+        afterId: null,
+      })
+      await svc.databases.setRowFields(tx, WS_A, created.id, databaseId, props)
+      await svc.databases.recompute(tx, WS_A, created.id)
+      return svc.databases.rowById(tx, WS_A, created.id)
+    })
+
+  beforeAll(async () => {
+    const made = await mkDatabase('Tasks')
+    dbId = made.db.id
+    dbSpace = made.space.id
+  }, 60_000)
+
+  it('does not list its own page as a row of itself', async () => {
+    const { db } = await mkDatabase('SelfRow')
+    const rows = await run((tx) =>
+      svc.databases.rows(tx, WS_A, db.id, { view: null, limit: 50, cursor: null }),
+    )
+    expect(
+      rows.items.map((r) => r.id),
+      'database_id means "row of"; setting it on the host page made the database a row of itself',
+    ).not.toContain(db.pageId)
+  })
+
+  it('arrives with a column and a view, never an empty screen', async () => {
+    const db = await run((tx) => svc.databases.get(tx, WS_A, dbId))
+    expect(db.properties.map((p) => p.key)).toEqual(['name'])
+    expect(db.views).toHaveLength(1)
+    expect(db.views[0]?.isDefault).toBe(true)
+  })
+
+  it('keeps a column’s data when it is renamed', async () => {
+    const db = await run((tx) => svc.databases.get(tx, WS_A, dbId))
+    const host = db.pageId
+    const estimate = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, dbId, { name: 'Estimate', type: 'number' }),
+    )
+    const row = await addRow(dbId, dbSpace, host, 'A task', { [estimate.key]: 5 })
+    await run((tx) => svc.databases.updateProperty(tx, WS_A, estimate.id, { name: 'Points' }))
+
+    const after = await run((tx) => svc.databases.rowById(tx, WS_A, row.id))
+    expect(
+      after.props[estimate.key],
+      'renaming a column emptied it — props is keyed by key for exactly this reason',
+    ).toBe(5)
+  })
+
+  it('sorts numbers as numbers, not as text', async () => {
+    const { db, space } = await mkDatabase('Sorting')
+    const size = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, { name: 'Size', type: 'number' }),
+    )
+    for (const n of [9, 10, 2]) await addRow(db.id, space.id, db.pageId, `n${n}`, { [size.key]: n })
+
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { sorts: [{ propertyKey: size.key, direction: 'asc' }] } as never,
+      }),
+    )
+    const rows = await run((tx) => svc.databases.rows(tx, WS_A, db.id, { view, limit: 50, cursor: null }))
+    expect(
+      rows.items.map((r) => r.props[size.key]),
+      'lexicographic ordering would put 10 before 9',
+    ).toEqual([2, 9, 10])
+  })
+
+  it('filters in SQL, so a page of rows is a full page', async () => {
+    const { db, space } = await mkDatabase('Filtering')
+    const done = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, { name: 'Done', type: 'checkbox' }),
+    )
+    for (let i = 0; i < 6; i++)
+      await addRow(db.id, space.id, db.pageId, `row ${i}`, { [done.key]: i % 2 === 0 })
+
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { filters: [{ propertyKey: done.key, operator: 'equals', value: true }] } as never,
+      }),
+    )
+    const first = await run((tx) => svc.databases.rows(tx, WS_A, db.id, { view, limit: 2, cursor: null }))
+    expect(first.items).toHaveLength(2)
+    expect(first.nextCursor, 'there are three matches, so a page of two has more').not.toBeNull()
+
+    const rest = await run((tx) =>
+      svc.databases.rows(tx, WS_A, db.id, { view, limit: 10, cursor: first.nextCursor }),
+    )
+    expect(rest.items).toHaveLength(1)
+  })
+
+  it('treats an untouched checkbox as false rather than as missing', async () => {
+    const { db, space } = await mkDatabase('Unchecked')
+    const done = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, { name: 'Done', type: 'checkbox' }),
+    )
+    await addRow(db.id, space.id, db.pageId, 'never touched', {})
+
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { filters: [{ propertyKey: done.key, operator: 'equals', value: false }] } as never,
+      }),
+    )
+    const rows = await run((tx) => svc.databases.rows(tx, WS_A, db.id, { view, limit: 10, cursor: null }))
+    expect(rows.items, 'most rows are ones nobody has touched').toHaveLength(1)
+  })
+
+  it('refuses a filter naming a property that does not exist', async () => {
+    const { db } = await mkDatabase('Unknown')
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { filters: [{ propertyKey: 'injected', operator: 'equals', value: 'x' }] } as never,
+      }),
+    )
+    await expect(
+      run((tx) => svc.databases.rows(tx, WS_A, db.id, { view, limit: 10, cursor: null })),
+    ).rejects.toThrow(/No such property/i)
+  })
+
+  it('computes a formula and stores it, so a view can sort by one', async () => {
+    const { db, space } = await mkDatabase('Formulas')
+    const hours = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, { name: 'Hours', type: 'number' }),
+    )
+    await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, {
+        name: 'Days',
+        type: 'formula',
+        config: { expression: 'round(prop("Hours") / 8, 2)' },
+      }),
+    )
+    const row = await addRow(db.id, space.id, db.pageId, 'a job', { [hours.key]: 20 })
+    expect(row.computed.days).toBe(2.5)
+  })
+
+  it('puts a broken formula in its own cell rather than failing the write', async () => {
+    const { db, space } = await mkDatabase('Broken')
+    await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, {
+        name: 'Oops',
+        type: 'formula',
+        config: { expression: 'prop("Missing") / prop("AlsoMissing")' },
+      }),
+    )
+    const row = await addRow(db.id, space.id, db.pageId, 'still saved', {})
+    expect(row.title).toBe('still saved')
+    // Dividing by nothing is a blank cell, and the row saved regardless.
+    expect(row.computed.oops).toBeNull()
+  })
+
+  it('links both ends of a relation, and rolls up through it', async () => {
+    const projects = await mkDatabase('Projects')
+    const tasks = await mkDatabase('RelTasks')
+
+    const toTasks = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, projects.db.id, {
+        name: 'Tasks',
+        type: 'relation',
+        config: { relationDatabaseId: tasks.db.id },
+      }),
+    )
+    const toProject = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, tasks.db.id, {
+        name: 'Project',
+        type: 'relation',
+        config: { relationDatabaseId: projects.db.id, relationPropertyId: toTasks.id },
+      }),
+    )
+    await run((tx) =>
+      svc.databases.updateProperty(tx, WS_A, toTasks.id, {
+        config: { relationDatabaseId: tasks.db.id, relationPropertyId: toProject.id },
+      }),
+    )
+    const points = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, tasks.db.id, { name: 'Points', type: 'number' }),
+    )
+    const total = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, projects.db.id, {
+        name: 'Total',
+        type: 'rollup',
+        config: {
+          rollupRelationPropertyId: toTasks.id,
+          rollupTargetPropertyId: points.id,
+          rollupFunction: 'sum',
+        },
+      }),
+    )
+
+    const project = await addRow(projects.db.id, projects.space.id, projects.db.pageId, 'Northstar', {})
+    const t1 = await addRow(tasks.db.id, tasks.space.id, tasks.db.pageId, 'one', { [points.key]: 3 })
+    const t2 = await addRow(tasks.db.id, tasks.space.id, tasks.db.pageId, 'two', { [points.key]: 5 })
+
+    await run((tx) => svc.databases.setRelation(tx, WS_A, toTasks.id, project.id, [t1.id, t2.id]))
+
+    const after = await run((tx) => svc.databases.rowById(tx, WS_A, project.id))
+    expect(after.computed[total.key]).toBe(8)
+
+    // Set from one side, visible from the other — a link that is not is the "wrong rollup" bug.
+    const backlink = await run((tx) => svc.databases.rowById(tx, WS_A, t1.id))
+    const deps = await run((tx) => svc.databases.dependentsOf(tx, WS_A, t1.id))
+    expect(backlink.id).toBe(t1.id)
+    expect(deps, 'the project rolls this task up, so editing it must recompute the project').toContain(
+      project.id,
+    )
+  })
+
+  it('keeps at least one view', async () => {
+    const { db } = await mkDatabase('LastView')
+    await expect(run((tx) => svc.databases.removeView(tx, WS_A, db.views[0]!.id))).rejects.toThrow(
+      /at least one view/i,
+    )
+  })
+})
+
 describe('collab.access', () => {
   const ask = (input: unknown) => kernel.call<CollabAccess>('quire.collab.access', input)
 

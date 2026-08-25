@@ -97,6 +97,19 @@ export const pages = schema.table(
     hasUnpublishedChanges: boolean('has_unpublished_changes').notNull().default(false),
     /** Flattened prose, kept for search; the collab service publishes it as the document changes. */
     text: text('text').notNull().default(''),
+    /**
+     * Set when this page is a row of a database. A row *is* a page — that is what makes it
+     * openable, commentable, versioned and searchable without any of it being built twice.
+     */
+    databaseId: uuid('database_id'),
+    /**
+     * The row's cells, keyed by property *key* rather than id, so renaming a column keeps its data.
+     * JSONB with a GIN index rather than a row per value: an entity-attribute-value table costs a
+     * join per column read and stores every number as text.
+     */
+    props: jsonObject('props'),
+    /** What the server worked out from `props` — formulas and rollups — so a view can sort by one. */
+    computed: jsonObject('computed'),
     createdBy: uuid('created_by'),
     updatedBy: uuid('updated_by'),
     createdAt: ts('created_at').notNull().defaultNow(),
@@ -108,6 +121,8 @@ export const pages = schema.table(
     index('pages_ws_space_idx').on(t.workspaceId, t.spaceId, t.position),
     index('pages_ws_parent_idx').on(t.workspaceId, t.parentId, t.position),
     index('pages_ws_updated_idx').on(t.workspaceId, t.updatedAt),
+    index('pages_ws_database_idx').on(t.workspaceId, t.databaseId, t.id),
+    index('pages_props_idx').using('gin', t.props),
   ],
 )
 

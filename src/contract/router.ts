@@ -12,6 +12,16 @@ import {
   Space,
   SpaceVisibility,
 } from './models.js'
+import {
+  Database,
+  Property,
+  PropertyConfig,
+  PropertyType,
+  Row,
+  View,
+  ViewConfig,
+  ViewKind,
+} from './properties.js'
 
 const ws = z.object({ workspaceId: WorkspaceId })
 const t = (...tags: string[]) => ({ tags })
@@ -185,6 +195,111 @@ export const quireContract = {
       .route({ method: 'POST', path: '/comments/{commentId}/resolve', ...t('comments') })
       .input(ws.extend({ commentId: Id, resolved: z.boolean().default(true) }))
       .output(CommentThread),
+  },
+
+  databases: {
+    get: baseContract
+      .route({ method: 'GET', path: '/databases/{databaseId}', ...t('databases') })
+      .input(ws.extend({ databaseId: Id }))
+      .output(Database),
+    /** Turn a page into a database. It arrives with one column and one view, never empty. */
+    create: baseContract
+      .route({ method: 'POST', path: '/databases', ...t('databases') })
+      .input(
+        ws.extend({
+          spaceId: Id,
+          pageId: Id,
+          name: z.string().max(120).default(''),
+          inline: z.boolean().default(false),
+        }),
+      )
+      .output(Database),
+    /** The rows a view selects, filtered and ordered in SQL so a page of rows is a full page. */
+    rows: baseContract
+      .route({ method: 'GET', path: '/databases/{databaseId}/rows', ...t('databases') })
+      .input(ws.extend({ databaseId: Id, viewId: Id.nullable().default(null) }).extend(PageInput.shape))
+      .output(page(Row)),
+    addRow: baseContract
+      .route({ method: 'POST', path: '/databases/{databaseId}/rows', ...t('databases') })
+      .input(
+        ws.extend({
+          databaseId: Id,
+          title: z.string().max(300).default(''),
+          props: z.record(z.string(), z.unknown()).default({}),
+        }),
+      )
+      .output(Row),
+    updateRow: baseContract
+      .route({ method: 'PATCH', path: '/rows/{rowId}', ...t('databases') })
+      .input(
+        ws.extend({
+          rowId: Id,
+          title: z.string().max(300).optional(),
+          props: z.record(z.string(), z.unknown()).optional(),
+        }),
+      )
+      .output(Row),
+
+    addProperty: baseContract
+      .route({ method: 'POST', path: '/databases/{databaseId}/properties', ...t('databases') })
+      .input(
+        ws.extend({
+          databaseId: Id,
+          name: z.string().min(1).max(120),
+          type: PropertyType,
+          config: PropertyConfig.default({}),
+        }),
+      )
+      .output(Property),
+    updateProperty: baseContract
+      .route({ method: 'PATCH', path: '/properties/{propertyId}', ...t('databases') })
+      .input(
+        ws.extend({
+          propertyId: Id,
+          name: z.string().min(1).max(120).optional(),
+          type: PropertyType.optional(),
+          config: PropertyConfig.optional(),
+          hidden: z.boolean().optional(),
+        }),
+      )
+      .output(Property),
+    removeProperty: baseContract
+      .route({ method: 'DELETE', path: '/properties/{propertyId}', ...t('databases') })
+      .input(ws.extend({ propertyId: Id }))
+      .output(Ok),
+
+    addView: baseContract
+      .route({ method: 'POST', path: '/databases/{databaseId}/views', ...t('databases') })
+      .input(
+        ws.extend({
+          databaseId: Id,
+          name: z.string().min(1).max(120),
+          kind: ViewKind.default('table'),
+          config: ViewConfig.partial().default({}),
+        }),
+      )
+      .output(View),
+    updateView: baseContract
+      .route({ method: 'PATCH', path: '/views/{viewId}', ...t('databases') })
+      .input(
+        ws.extend({
+          viewId: Id,
+          name: z.string().min(1).max(120).optional(),
+          kind: ViewKind.optional(),
+          config: ViewConfig.partial().optional(),
+        }),
+      )
+      .output(View),
+    removeView: baseContract
+      .route({ method: 'DELETE', path: '/views/{viewId}', ...t('databases') })
+      .input(ws.extend({ viewId: Id }))
+      .output(Ok),
+
+    /** Both ends at once, because a link visible from one side only is the "wrong rollup" bug. */
+    setRelation: baseContract
+      .route({ method: 'POST', path: '/rows/{rowId}/relations', ...t('databases') })
+      .input(ws.extend({ rowId: Id, propertyId: Id, toPageIds: z.array(Id).max(200) }))
+      .output(Ok),
   },
 
   publishing: {

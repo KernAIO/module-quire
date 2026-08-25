@@ -135,11 +135,13 @@ export const Filter = z.object({
   operator: FilterOperator,
   value: z.unknown().optional(),
 })
+export type Filter = z.infer<typeof Filter>
 
 export const Sort = z.object({
   propertyKey: z.string(),
   direction: z.enum(['asc', 'desc']).default('asc'),
 })
+export type Sort = z.infer<typeof Sort>
 
 export const ViewConfig = z.object({
   filters: z.array(Filter).default([]),

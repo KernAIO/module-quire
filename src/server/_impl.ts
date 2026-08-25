@@ -445,6 +445,157 @@ export function implement_(kernel: Kernel) {
         }),
     },
 
+    databases: {
+      get: scoped.databases.get
+        .use(requires('quire.page.view'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, (tx) => svc.databases.get(tx, input.workspaceId, input.databaseId)),
+        ),
+
+      create: scoped.databases.create.use(requires('quire.page.edit')).handler(async ({ input, context }) => {
+        const db = await run(context, input.workspaceId, async (tx) => {
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+          return svc.databases.create(tx, context.principal, input.workspaceId, input)
+        })
+        await announce(input.workspaceId, 'page', input.pageId, 'updated', { spaceId: input.spaceId })
+        return db
+      }),
+
+      rows: scoped.databases.rows.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          const view = input.viewId
+            ? (db.views.find((v) => v.id === input.viewId) ?? null)
+            : (db.views.find((v) => v.isDefault) ?? db.views[0] ?? null)
+          return svc.databases.rows(tx, input.workspaceId, input.databaseId, {
+            view,
+            limit: input.limit,
+            cursor: input.cursor ?? null,
+          })
+        }),
+      ),
+
+      addRow: scoped.databases.addRow
+        .use(requires('quire.page.create'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
+            await svc.access.requirePage(context.principal, 'quire.page.create', input.workspaceId, scope)
+            // A row is a page: created in the same space, parented to the database's own page, so it
+            // is reachable, versioned and commentable like anything else.
+            const created = await svc.pages.create(tx, context.principal, input.workspaceId, {
+              spaceId: db.spaceId,
+              parentId: db.pageId,
+              title: input.title,
+              kind: 'page',
+              icon: null,
+              afterId: null,
+            })
+            await svc.databases.setRowFields(tx, input.workspaceId, created.id, input.databaseId, input.props)
+            await svc.databases.recompute(tx, input.workspaceId, created.id)
+            return svc.databases.rowById(tx, input.workspaceId, created.id)
+          })
+          await announce(input.workspaceId, 'row', row.id, 'created', { databaseId: input.databaseId })
+          return row
+        }),
+
+      updateRow: scoped.databases.updateRow
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.rowId)
+            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            if (input.title !== undefined)
+              await svc.pages.update(tx, context.principal, input.workspaceId, input.rowId, {
+                title: input.title,
+              })
+            if (input.props)
+              await svc.databases.setRowFields(tx, input.workspaceId, input.rowId, null, input.props)
+            await svc.databases.recompute(tx, input.workspaceId, input.rowId)
+            // Anything rolling this row up is now stale.
+            for (const id of await svc.databases.dependentsOf(tx, input.workspaceId, input.rowId))
+              await svc.databases.recompute(tx, input.workspaceId, id)
+            return svc.databases.rowById(tx, input.workspaceId, input.rowId)
+          })
+          await announce(input.workspaceId, 'row', row.id, 'updated', { databaseId: row.databaseId })
+          return row
+        }),
+
+      addProperty: scoped.databases.addProperty
+        .use(requires('quire.page.edit'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, (tx) =>
+            svc.databases.addProperty(tx, input.workspaceId, input.databaseId, input),
+          ),
+        ),
+
+      updateProperty: scoped.databases.updateProperty
+        .use(requires('quire.page.edit'))
+        .handler(({ input, context }) => {
+          const { workspaceId, propertyId, ...patch } = input
+          return run(context, workspaceId, (tx) =>
+            svc.databases.updateProperty(tx, workspaceId, propertyId, patch as never),
+          )
+        }),
+
+      removeProperty: scoped.databases.removeProperty
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          await run(context, input.workspaceId, (tx) =>
+            svc.databases.removeProperty(tx, input.workspaceId, input.propertyId),
+          )
+          return { ok: true as const }
+        }),
+
+      addView: scoped.databases.addView
+        .use(requires('quire.page.edit'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, (tx) =>
+            svc.databases.addView(tx, input.workspaceId, input.databaseId, input as never),
+          ),
+        ),
+
+      updateView: scoped.databases.updateView
+        .use(requires('quire.page.edit'))
+        .handler(({ input, context }) => {
+          const { workspaceId, viewId, ...patch } = input
+          return run(context, workspaceId, (tx) =>
+            svc.databases.updateView(tx, workspaceId, viewId, patch as never),
+          )
+        }),
+
+      removeView: scoped.databases.removeView
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          await run(context, input.workspaceId, (tx) =>
+            svc.databases.removeView(tx, input.workspaceId, input.viewId),
+          )
+          return { ok: true as const }
+        }),
+
+      setRelation: scoped.databases.setRelation
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          await run(context, input.workspaceId, async (tx) => {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.rowId)
+            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            await svc.databases.setRelation(
+              tx,
+              input.workspaceId,
+              input.propertyId,
+              input.rowId,
+              input.toPageIds,
+            )
+          })
+          await announce(input.workspaceId, 'row', input.rowId, 'updated')
+          return { ok: true as const }
+        }),
+    },
+
     publishing: {
       publish: scoped.publishing.publish
         .use(requires('quire.page.publish'))

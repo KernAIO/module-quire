@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.9.1
+
+### Patch Changes
+
+- test(quire): anchor the database views for the end-to-end sweep
+
 ## 0.9.0
 
 ### Minor Changes

@@ -199,3 +199,31 @@ export const Row = z.object({
   updatedAt: Timestamp,
 })
 export type Row = z.infer<typeof Row>
+
+/**
+ * A row named rather than identified.
+ *
+ * A relation cell holds page ids and nothing else, so drawing one without this shows a column of
+ * uuids. `databases.lookup` answers in this shape for both jobs the cell has — resolving the ids it
+ * already holds, and searching for the next one.
+ */
+export const RowRef = z.object({
+  id: Id,
+  title: z.string(),
+  icon: z.string().nullable(),
+})
+export type RowRef = z.infer<typeof RowRef>
+
+/**
+ * A database named rather than identified.
+ *
+ * A relation column has to point at another database, and a rollup has to walk one — so the
+ * property editor needs the list of them. `Database` itself carries every property and every view,
+ * which is a large answer to "what may I link to".
+ */
+export const DatabaseRef = z.object({
+  id: Id,
+  pageId: Id,
+  name: z.string(),
+})
+export type DatabaseRef = z.infer<typeof DatabaseRef>

@@ -452,6 +452,40 @@ export function implement_(kernel: Kernel) {
           run(context, input.workspaceId, (tx) => svc.databases.get(tx, input.workspaceId, input.databaseId)),
         ),
 
+      list: scoped.databases.list.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.space.view',
+            input.workspaceId,
+            input.spaceId,
+          )
+          return svc.databases.list(tx, input.workspaceId, input.spaceId)
+        }),
+      ),
+
+      forPage: scoped.databases.forPage.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          return svc.databases.forPage(tx, input.workspaceId, input.pageId)
+        }),
+      ),
+
+      lookup: scoped.databases.lookup.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
+          const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
+          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          return svc.databases.lookup(tx, input.workspaceId, input.databaseId, {
+            query: input.query,
+            ids: input.ids,
+            limit: input.limit,
+          })
+        }),
+      ),
+
       create: scoped.databases.create.use(requires('quire.page.edit')).handler(async ({ input, context }) => {
         const db = await run(context, input.workspaceId, async (tx) => {
           const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
@@ -513,8 +547,34 @@ export function implement_(kernel: Kernel) {
               await svc.pages.update(tx, context.principal, input.workspaceId, input.rowId, {
                 title: input.title,
               })
-            if (input.props)
-              await svc.databases.setRowFields(tx, input.workspaceId, input.rowId, null, input.props)
+            /**
+             * A relation cell edited from a table arrives in `props` like any other, and writing it
+             * there would leave the join table — which is what a rollup walks and what the other
+             * side reads — untouched. Split those keys out and route them through `setRelation`, so
+             * the two stores cannot diverge whichever surface did the editing.
+             */
+            if (input.props) {
+              const row = await svc.databases.rowById(tx, input.workspaceId, input.rowId)
+              const db = row.databaseId
+                ? await svc.databases.get(tx, input.workspaceId, row.databaseId)
+                : null
+              const relationProps = (db?.properties ?? []).filter((p) => p.type === 'relation')
+              const plain: Record<string, unknown> = {}
+              for (const [key, value] of Object.entries(input.props)) {
+                const relation = relationProps.find((p) => p.key === key)
+                if (relation)
+                  await svc.databases.setRelation(
+                    tx,
+                    input.workspaceId,
+                    relation.id,
+                    input.rowId,
+                    (Array.isArray(value) ? value : value == null ? [] : [value]).map(String),
+                  )
+                else plain[key] = value
+              }
+              if (Object.keys(plain).length > 0)
+                await svc.databases.setRowFields(tx, input.workspaceId, input.rowId, null, plain)
+            }
             await svc.databases.recompute(tx, input.workspaceId, input.rowId)
             // Anything rolling this row up is now stale.
             for (const id of await svc.databases.dependentsOf(tx, input.workspaceId, input.rowId))
@@ -525,55 +585,82 @@ export function implement_(kernel: Kernel) {
           return row
         }),
 
+      /**
+       * Every schema change announces `database`.
+       *
+       * Adding a column, hiding one, or adding a view changes what *every* open tab of this
+       * database is drawing, and none of these announced anything — so a second person's table kept
+       * the old columns until they reloaded, which reads as their edit having been lost.
+       */
       addProperty: scoped.databases.addProperty
         .use(requires('quire.page.edit'))
-        .handler(({ input, context }) =>
-          run(context, input.workspaceId, (tx) =>
+        .handler(async ({ input, context }) => {
+          const property = await run(context, input.workspaceId, (tx) =>
             svc.databases.addProperty(tx, input.workspaceId, input.databaseId, input),
-          ),
-        ),
+          )
+          await announce(input.workspaceId, 'database', input.databaseId, 'updated')
+          return property
+        }),
 
       updateProperty: scoped.databases.updateProperty
         .use(requires('quire.page.edit'))
-        .handler(({ input, context }) => {
+        .handler(async ({ input, context }) => {
           const { workspaceId, propertyId, ...patch } = input
-          return run(context, workspaceId, (tx) =>
+          const property = await run(context, workspaceId, (tx) =>
             svc.databases.updateProperty(tx, workspaceId, propertyId, patch as never),
           )
+          await announce(workspaceId, 'database', property.databaseId, 'updated')
+          return property
+        }),
+
+      moveProperty: scoped.databases.moveProperty
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          const property = await run(context, input.workspaceId, (tx) =>
+            svc.databases.moveProperty(tx, input.workspaceId, input.propertyId, input.afterId),
+          )
+          await announce(input.workspaceId, 'database', property.databaseId, 'updated')
+          return property
         }),
 
       removeProperty: scoped.databases.removeProperty
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          await run(context, input.workspaceId, (tx) =>
+          const property = await run(context, input.workspaceId, (tx) =>
             svc.databases.removeProperty(tx, input.workspaceId, input.propertyId),
           )
+          await announce(input.workspaceId, 'database', property.databaseId, 'updated')
           return { ok: true as const }
         }),
 
       addView: scoped.databases.addView
         .use(requires('quire.page.edit'))
-        .handler(({ input, context }) =>
-          run(context, input.workspaceId, (tx) =>
+        .handler(async ({ input, context }) => {
+          const view = await run(context, input.workspaceId, (tx) =>
             svc.databases.addView(tx, input.workspaceId, input.databaseId, input as never),
-          ),
-        ),
+          )
+          await announce(input.workspaceId, 'database', input.databaseId, 'updated')
+          return view
+        }),
 
       updateView: scoped.databases.updateView
         .use(requires('quire.page.edit'))
-        .handler(({ input, context }) => {
+        .handler(async ({ input, context }) => {
           const { workspaceId, viewId, ...patch } = input
-          return run(context, workspaceId, (tx) =>
+          const view = await run(context, workspaceId, (tx) =>
             svc.databases.updateView(tx, workspaceId, viewId, patch as never),
           )
+          await announce(workspaceId, 'database', view.databaseId, 'updated')
+          return view
         }),
 
       removeView: scoped.databases.removeView
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          await run(context, input.workspaceId, (tx) =>
+          const view = await run(context, input.workspaceId, (tx) =>
             svc.databases.removeView(tx, input.workspaceId, input.viewId),
           )
+          await announce(input.workspaceId, 'database', view.databaseId, 'updated')
           return { ok: true as const }
         }),
 

@@ -14,10 +14,12 @@ import {
 } from './models.js'
 import {
   Database,
+  DatabaseRef,
   Property,
   PropertyConfig,
   PropertyType,
   Row,
+  RowRef,
   View,
   ViewConfig,
   ViewKind,
@@ -202,6 +204,40 @@ export const quireContract = {
       .route({ method: 'GET', path: '/databases/{databaseId}', ...t('databases') })
       .input(ws.extend({ databaseId: Id }))
       .output(Database),
+    /**
+     * The database a `database` page draws, or null.
+     *
+     * A page carries no field pointing at it: `pages.database_id` already means "this page is a
+     * *row of* that database", and giving the same name a second, opposite meaning is what made the
+     * database appear as the first row of itself. So the direction nobody can express in `Page` is
+     * asked for here instead.
+     */
+    forPage: baseContract
+      .route({ method: 'GET', path: '/pages/{pageId}/database', ...t('databases') })
+      .input(ws.extend({ pageId: Id }))
+      .output(Database.nullable()),
+    /** Every database in a space, named — what a relation or a rollup is allowed to point at. */
+    list: baseContract
+      .route({ method: 'GET', path: '/spaces/{spaceId}/databases', ...t('databases') })
+      .input(ws.extend({ spaceId: Id }))
+      .output(z.array(DatabaseRef)),
+    /**
+     * Rows named rather than identified — what a relation cell draws, and what it searches.
+     *
+     * `ids` resolves what a cell already holds; `query` finds the next one. Both in one procedure
+     * because a cell needs both within a keystroke of each other.
+     */
+    lookup: baseContract
+      .route({ method: 'GET', path: '/databases/{databaseId}/lookup', ...t('databases') })
+      .input(
+        ws.extend({
+          databaseId: Id,
+          query: z.string().max(200).default(''),
+          ids: z.array(Id).max(200).default([]),
+          limit: z.number().int().min(1).max(100).default(25),
+        }),
+      )
+      .output(z.array(RowRef)),
     /** Turn a page into a database. It arrives with one column and one view, never empty. */
     create: baseContract
       .route({ method: 'POST', path: '/databases', ...t('databases') })
@@ -262,6 +298,16 @@ export const quireContract = {
           hidden: z.boolean().optional(),
         }),
       )
+      .output(Property),
+    /**
+     * Reorder a column. `afterId` is the column to land behind; null means first.
+     *
+     * The rank is minted by the server, exactly as `pages.move` does it — a client that sends a
+     * raw fractional index is a client that can write one two other people are already using.
+     */
+    moveProperty: baseContract
+      .route({ method: 'POST', path: '/properties/{propertyId}/move', ...t('databases') })
+      .input(ws.extend({ propertyId: Id, afterId: Id.nullable().default(null) }))
       .output(Property),
     removeProperty: baseContract
       .route({ method: 'DELETE', path: '/properties/{propertyId}', ...t('databases') })

@@ -1,15 +1,16 @@
 import type { Principal } from '@kernhq/contracts'
 import { KernError, type Kernel, type Tx, uuidv7 } from '@kernhq/kernel'
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
-import { initialRank, rankBetween } from '../../client/rank.js'
-import type { Database, Property, Row, View, ViewConfig } from '../../contract/index.js'
+import { and, asc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm'
 import {
   type Ast,
   evaluateFormula,
   type FormulaValue,
   formulaDependencies,
   parseFormula,
-} from '../formula.js'
+} from '../../client/formula.js'
+import { initialRank, rankBetween } from '../../client/rank.js'
+import type { Database, DatabaseRef, Property, Row, RowRef, View, ViewConfig } from '../../contract/index.js'
+import { ViewConfig as ViewConfigSchema } from '../../contract/index.js'
 import { databases, pages, properties, relations, views } from '../schema.js'
 import type { QuireAccess } from './access.js'
 import { filterToSql, propertyFor, sortToSql } from './query.js'
@@ -29,12 +30,19 @@ export const toProperty = (r: PropertyRow): Property => ({
   hidden: r.hidden,
 })
 
+/**
+ * `config` is **parsed**, never cast.
+ *
+ * The column is one jsonb blob written by whatever the client last sent, so a cast promises
+ * `filterMode: 'and'` and hands the caller `undefined`. Every default in `ViewConfig` exists to be
+ * relied on — parsing here is what makes the type the client is given true.
+ */
 export const toView = (r: ViewRow): View => ({
   id: r.id,
   databaseId: r.databaseId,
   name: r.name,
   kind: r.kind as View['kind'],
-  config: r.config as ViewConfig,
+  config: ViewConfigSchema.parse((r.config ?? {}) as Partial<ViewConfig>),
   position: r.position,
   isDefault: r.isDefault,
 })
@@ -110,6 +118,65 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
         createdAt: db.createdAt.toISOString(),
         updatedAt: db.updatedAt.toISOString(),
       }
+    },
+
+    /** Every database in a space, named. What a relation or a rollup is allowed to point at. */
+    async list(tx: Tx, workspaceId: string, spaceId: string): Promise<DatabaseRef[]> {
+      const rows = await tx
+        .select({ id: databases.id, pageId: databases.pageId, name: databases.name })
+        .from(databases)
+        .where(and(eq(databases.workspaceId, workspaceId), eq(databases.spaceId, spaceId)))
+        .orderBy(asc(databases.name))
+      return rows
+    },
+
+    /**
+     * The database a page *is*, or null.
+     *
+     * `pages.database_id` points the other way — it says which database a row belongs to — so this
+     * is the only way a `database` page can find what to draw. Null rather than a refusal: a page
+     * whose kind says database but which has none yet is a state the interface has to render.
+     */
+    async forPage(tx: Tx, workspaceId: string, pageId: string): Promise<Database | null> {
+      const [db] = await tx
+        .select({ id: databases.id })
+        .from(databases)
+        .where(and(eq(databases.workspaceId, workspaceId), eq(databases.pageId, pageId)))
+        .limit(1)
+      return db ? this.get(tx, workspaceId, db.id) : null
+    },
+
+    /**
+     * Rows by name — what a relation cell draws and what it searches.
+     *
+     * `ids` and `query` are OR-ed rather than AND-ed on purpose: a cell asks for the rows it holds
+     * *and* the rows matching what is being typed in one call, and a cell that loses the chips it
+     * already had the moment somebody types is the bug this shape avoids.
+     */
+    async lookup(
+      tx: Tx,
+      workspaceId: string,
+      databaseId: string,
+      opts: { query: string; ids: string[]; limit: number },
+    ): Promise<RowRef[]> {
+      const wanted = [
+        opts.ids.length > 0 ? inArray(pages.id, opts.ids) : undefined,
+        opts.query.trim() ? ilike(pages.title, `%${opts.query.trim()}%`) : undefined,
+      ].filter((c): c is NonNullable<typeof c> => c !== undefined)
+      const rows = await tx
+        .select({ id: pages.id, title: pages.title, icon: pages.icon })
+        .from(pages)
+        .where(
+          and(
+            eq(pages.workspaceId, workspaceId),
+            eq(pages.databaseId, databaseId),
+            isNull(pages.deletedAt),
+            wanted.length > 0 ? or(...wanted) : undefined,
+          ),
+        )
+        .orderBy(asc(pages.title))
+        .limit(opts.limit)
+      return rows.map((r) => ({ id: r.id, title: r.title, icon: r.icon }))
     },
 
     /**
@@ -215,6 +282,40 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
       return toProperty(row)
     },
 
+    /**
+     * Put a column behind another one.
+     *
+     * The rank is minted here, between the two neighbours, exactly as `pages.move` does it — the
+     * contract exposes `afterId` and never a raw position, because a client that writes its own
+     * fractional index writes one somebody else is already using.
+     */
+    async moveProperty(tx: Tx, workspaceId: string, propertyId: string, afterId: string | null) {
+      const [row] = await tx
+        .select()
+        .from(properties)
+        .where(and(eq(properties.workspaceId, workspaceId), eq(properties.id, propertyId)))
+        .limit(1)
+      if (!row) throw KernError.notFound('Property')
+      if (afterId === propertyId) throw KernError.badRequest('A column cannot follow itself')
+
+      const siblings = await tx
+        .select({ id: properties.id, position: properties.position })
+        .from(properties)
+        .where(and(eq(properties.workspaceId, workspaceId), eq(properties.databaseId, row.databaseId)))
+        .orderBy(asc(properties.position))
+      const others = siblings.filter((s) => s.id !== propertyId)
+      const at = afterId ? others.findIndex((s) => s.id === afterId) : -1
+      if (afterId && at < 0) throw KernError.badRequest('No such column in this database')
+      const position = rankBetween(others[at]?.position ?? null, others[at + 1]?.position ?? null)
+
+      const [moved] = await tx
+        .update(properties)
+        .set({ position })
+        .where(and(eq(properties.workspaceId, workspaceId), eq(properties.id, propertyId)))
+        .returning()
+      return toProperty(moved!)
+    },
+
     async removeProperty(tx: Tx, workspaceId: string, propertyId: string) {
       const [row] = await tx
         .select()
@@ -275,6 +376,14 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
       return toView(row)
     },
 
+    /**
+     * Delete a view.
+     *
+     * Refused when it is the **last** one, not when it is the default — those are different rules,
+     * and the first tab of every database is the default, so refusing the default meant the first
+     * tab could never be deleted however many others existed. When the default goes, the next view
+     * by position takes over; a database with views and no default renders nothing at all.
+     */
     async removeView(tx: Tx, workspaceId: string, viewId: string) {
       const [row] = await tx
         .select()
@@ -282,8 +391,23 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
         .where(and(eq(views.workspaceId, workspaceId), eq(views.id, viewId)))
         .limit(1)
       if (!row) throw KernError.notFound('View')
-      if (row.isDefault) throw KernError.badRequest('A database keeps at least one view')
+
+      const siblings = await tx
+        .select({ id: views.id, position: views.position })
+        .from(views)
+        .where(and(eq(views.workspaceId, workspaceId), eq(views.databaseId, row.databaseId)))
+        .orderBy(asc(views.position))
+      if (siblings.length <= 1) throw KernError.badRequest('A database keeps at least one view')
+
       await tx.delete(views).where(and(eq(views.workspaceId, workspaceId), eq(views.id, viewId)))
+      if (row.isDefault) {
+        const heir = siblings.find((v) => v.id !== viewId)
+        if (heir)
+          await tx
+            .update(views)
+            .set({ isDefault: true })
+            .where(and(eq(views.workspaceId, workspaceId), eq(views.id, heir.id)))
+      }
       return toView(row)
     },
 
@@ -317,13 +441,26 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
             : sql`(${sql.join(filters, sql` and `)})`,
         )
       }
-      if (opts.cursor) conditions.push(sql`${pages.id} > ${opts.cursor}`)
-
       const orderBy = (config?.sorts ?? []).map((s) =>
         sortToSql(s, propertyFor(db.properties, s.propertyKey)),
       )
-      // Always last, so ordering is total and the keyset cursor cannot skip or repeat a row.
+      // Always last, so the ordering is total and two rows with equal sort keys keep a stable order
+      // between pages.
       orderBy.push(sql`${pages.id} asc`)
+
+      /**
+       * Paged by offset, not by a keyset on `pages.id`.
+       *
+       * A keyset cursor is only correct when the ordering it filters on *is* the ordering — and the
+       * moment a view carries a sort, `id > cursor` throws away rows that sort after the cursor but
+       * have a smaller id, and repeats the ones that sort before it. Every sorted view lost rows
+       * that way, and nothing said so: a short page reads as the end of the data.
+       *
+       * Offset paging repeats a row if somebody inserts one mid-scroll, which is the cheaper wrong
+       * answer, and the only alternative is a composite keyset over an arbitrary sort expression.
+       */
+      const offset = Number.parseInt(opts.cursor ?? '0', 10)
+      const from = Number.isFinite(offset) && offset > 0 ? offset : 0
 
       const found = await tx
         .select()
@@ -331,9 +468,10 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
         .where(and(...conditions))
         .orderBy(...orderBy)
         .limit(opts.limit + 1)
+        .offset(from)
 
       const items = found.slice(0, opts.limit).map(toRow)
-      return { items, nextCursor: found.length > opts.limit ? (items.at(-1)?.id ?? null) : null }
+      return { items, nextCursor: found.length > opts.limit ? String(from + items.length) : null }
     },
 
     /**
@@ -498,6 +636,20 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
       if (!property) throw KernError.notFound('Property')
       const inverse = (property.config as { relationPropertyId?: string }).relationPropertyId ?? null
 
+      // The rows this link used to reach: they have to be recomputed and un-mirrored too, or a row
+      // that was just unlinked keeps the backlink and the rollup that came with it.
+      const before = await tx
+        .select({ id: relations.toPageId })
+        .from(relations)
+        .where(
+          and(
+            eq(relations.workspaceId, workspaceId),
+            eq(relations.propertyId, propertyId),
+            eq(relations.fromPageId, fromPageId),
+          ),
+        )
+      const previous = before.map((b) => b.id)
+
       await tx
         .delete(relations)
         .where(
@@ -542,9 +694,46 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
         }
       }
 
+      /**
+       * Mirror the ids into `props` on both sides.
+       *
+       * The join table stays the truth — it is what a rollup walks — but nothing *reads* a row
+       * except through `props`: `toRow` returns that column and no other, and the relation branch
+       * of `filterToSql` is `props->key ?| array`. Without the mirror a relation column is
+       * permanently blank and a relation filter never matches, which reads as missing data rather
+       * than as a missing write. This is the same trick as `pages.title` mirroring the Y.Text.
+       */
+      await this.setRowFields(tx, workspaceId, fromPageId, null, { [property.key]: toPageIds })
+      const touched = [...new Set([...previous, ...toPageIds])]
+      if (inverse && touched.length > 0) {
+        const [inverseRow] = await tx
+          .select({ key: properties.key })
+          .from(properties)
+          .where(and(eq(properties.workspaceId, workspaceId), eq(properties.id, inverse)))
+          .limit(1)
+        if (inverseRow) {
+          const links = await tx
+            .select({ from: relations.fromPageId, to: relations.toPageId })
+            .from(relations)
+            .where(
+              and(
+                eq(relations.workspaceId, workspaceId),
+                eq(relations.propertyId, inverse),
+                inArray(relations.fromPageId, touched),
+              ),
+            )
+          // Every touched row is written, including one whose last link just went — an absent key
+          // here would leave the id it no longer holds sitting in `props`.
+          for (const id of touched)
+            await this.setRowFields(tx, workspaceId, id, null, {
+              [inverseRow.key]: links.filter((l) => l.from === id).map((l) => l.to),
+            })
+        }
+      }
+
       // The rows on both sides may carry rollups over this relation.
       await this.recompute(tx, workspaceId, fromPageId)
-      for (const id of toPageIds) await this.recompute(tx, workspaceId, id)
+      for (const id of touched) await this.recompute(tx, workspaceId, id)
     },
 
     /**

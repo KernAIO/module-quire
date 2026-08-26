@@ -251,6 +251,25 @@ describe('migrations', () => {
     expect(res.rows[0]?.collname).toBe('C')
   })
 
+  it('sorts column and view positions by code point too', async () => {
+    // `pages.position` carried `COLLATE "C"` from the first migration and these two did not, so a
+    // database's second view — rank 'k' against the first's 'V' — sorted in front of it, and moving
+    // a column put it somewhere nobody asked for. Nothing failed; the rows came back in the wrong
+    // order, which is the only symptom a collation bug has.
+    const res = await kernel.database.db.execute<{ relname: string; collname: string }>(
+      `select c.relname, coll.collname from pg_attribute a
+         join pg_class c on c.oid = a.attrelid
+         join pg_collation coll on coll.oid = a.attcollation
+        where c.relnamespace = 'mod_quire'::regnamespace
+          and c.relname in ('properties', 'views') and a.attname = 'position'
+        order by c.relname`,
+    )
+    expect(res.rows.map((r) => [r.relname, r.collname])).toEqual([
+      ['properties', 'C'],
+      ['views', 'C'],
+    ])
+  })
+
   it('applies again without changing anything', async () => {
     await expect(
       kernel.database.migrateModule('quire', new URL('../../migrations', import.meta.url).pathname),
@@ -986,11 +1005,228 @@ describe('databases', () => {
     )
   })
 
-  it('keeps at least one view', async () => {
+  it('sorts by a formula, which lives in computed rather than in props', async () => {
+    const { db, space } = await mkDatabase('FormulaSort')
+    const hours = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, { name: 'Hours', type: 'number' }),
+    )
+    const days = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, db.id, {
+        name: 'Days',
+        type: 'formula',
+        config: { expression: 'round(prop("Hours") / 8, 2)' },
+      }),
+    )
+    await addRow(db.id, space.id, db.pageId, 'four', { [hours.key]: 4 })
+    await addRow(db.id, space.id, db.pageId, 'twenty', { [hours.key]: 20 })
+
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { sorts: [{ propertyKey: days.key, direction: 'desc' }] } as never,
+      }),
+    )
+    const rows = await run((tx) => svc.databases.rows(tx, WS_A, db.id, { view, limit: 50, cursor: null }))
+    expect(
+      rows.items.map((r) => r.title),
+      'a formula lives in computed, not props — reading props sorts nothing and says nothing',
+    ).toEqual(['twenty', 'four'])
+  })
+
+  it('pages a sorted view without dropping or repeating a row', async () => {
+    const { db, space } = await mkDatabase('Paging')
+    const n = await run((tx) => svc.databases.addProperty(tx, WS_A, db.id, { name: 'N', type: 'number' }))
+    for (const value of [5, 4, 3, 2, 1])
+      await addRow(db.id, space.id, db.pageId, `row ${value}`, { [n.key]: value })
+
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { sorts: [{ propertyKey: n.key, direction: 'asc' }] } as never,
+      }),
+    )
+
+    const seen: string[] = []
+    const ids: string[] = []
+    let cursor: string | null = null
+    for (let guard = 0; guard < 10; guard++) {
+      const page: Awaited<ReturnType<typeof svc.databases.rows>> = await run((tx) =>
+        svc.databases.rows(tx, WS_A, db.id, { view, limit: 2, cursor }),
+      )
+      seen.push(...page.items.map((r) => r.title))
+      ids.push(...page.items.map((r) => r.id))
+      cursor = page.nextCursor
+      if (!cursor) break
+    }
+    expect(seen, 'a keyset on pages.id is only a valid cursor when id is the whole ordering').toEqual([
+      'row 1',
+      'row 2',
+      'row 3',
+      'row 4',
+      'row 5',
+    ])
+    expect(new Set(ids).size).toBe(5)
+  })
+
+  it('reads a relation from both rows, because the join table alone draws nothing', async () => {
+    const projects = await mkDatabase('MirrorProjects')
+    const tasks = await mkDatabase('MirrorTasks')
+    const toTasks = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, projects.db.id, {
+        name: 'Tasks',
+        type: 'relation',
+        config: { relationDatabaseId: tasks.db.id },
+      }),
+    )
+    const toProject = await run((tx) =>
+      svc.databases.addProperty(tx, WS_A, tasks.db.id, {
+        name: 'Project',
+        type: 'relation',
+        config: { relationDatabaseId: projects.db.id, relationPropertyId: toTasks.id },
+      }),
+    )
+    await run((tx) =>
+      svc.databases.updateProperty(tx, WS_A, toTasks.id, {
+        config: { relationDatabaseId: tasks.db.id, relationPropertyId: toProject.id },
+      }),
+    )
+
+    const project = await addRow(projects.db.id, projects.space.id, projects.db.pageId, 'Northstar', {})
+    const t1 = await addRow(tasks.db.id, tasks.space.id, tasks.db.pageId, 'one', {})
+    const t2 = await addRow(tasks.db.id, tasks.space.id, tasks.db.pageId, 'two', {})
+    await run((tx) => svc.databases.setRelation(tx, WS_A, toTasks.id, project.id, [t1.id, t2.id]))
+
+    const after = await run((tx) => svc.databases.rowById(tx, WS_A, project.id))
+    expect(
+      after.props[toTasks.key],
+      'toRow reads props and nothing else, so an unmirrored relation is a blank column',
+    ).toEqual([t1.id, t2.id])
+    const back = await run((tx) => svc.databases.rowById(tx, WS_A, t1.id))
+    expect(back.props[toProject.key]).toContain(project.id)
+
+    // …and a view can filter by it, which is the same read.
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, projects.db.views[0]!.id, {
+        config: {
+          filters: [{ propertyKey: toTasks.key, operator: 'is_any_of', value: [t1.id] }],
+        } as never,
+      }),
+    )
+    const rows = await run((tx) =>
+      svc.databases.rows(tx, WS_A, projects.db.id, { view, limit: 10, cursor: null }),
+    )
+    expect(rows.items.map((r) => r.id)).toEqual([project.id])
+
+    // Unlinking clears the mirror on the row that lost the link, not just the join table.
+    await run((tx) => svc.databases.setRelation(tx, WS_A, toTasks.id, project.id, [t2.id]))
+    const dropped = await run((tx) => svc.databases.rowById(tx, WS_A, t1.id))
+    expect(dropped.props[toProject.key]).toEqual([])
+  })
+
+  it('deletes a default view when another one remains', async () => {
+    const { db } = await mkDatabase('TwoViews')
+    const second = await run((tx) => svc.databases.addView(tx, WS_A, db.id, { name: 'Board', kind: 'board' }))
+    await run((tx) => svc.databases.removeView(tx, WS_A, db.views[0]!.id))
+
+    const after = await run((tx) => svc.databases.get(tx, WS_A, db.id))
+    expect(after.views.map((v) => v.id)).toEqual([second.id])
+    expect(after.views[0]?.isDefault, 'a database with views and no default renders nothing at all').toBe(
+      true,
+    )
+  })
+
+  it('keeps at least one view — the last one, not the first', async () => {
     const { db } = await mkDatabase('LastView')
+    const second = await run((tx) => svc.databases.addView(tx, WS_A, db.id, { name: 'Extra', kind: 'table' }))
+    // The old test deleted the only view, which is also the default, so it passed on the wrong rule.
+    await run((tx) => svc.databases.removeView(tx, WS_A, second.id))
     await expect(run((tx) => svc.databases.removeView(tx, WS_A, db.views[0]!.id))).rejects.toThrow(
       /at least one view/i,
     )
+  })
+
+  it('moves a column behind another one', async () => {
+    const { db } = await mkDatabase('Reorder')
+    const b = await run((tx) => svc.databases.addProperty(tx, WS_A, db.id, { name: 'B', type: 'text' }))
+    const c = await run((tx) => svc.databases.addProperty(tx, WS_A, db.id, { name: 'C', type: 'text' }))
+    await run((tx) => svc.databases.moveProperty(tx, WS_A, c.id, db.properties[0]!.id))
+
+    const after = await run((tx) => svc.databases.get(tx, WS_A, db.id))
+    expect(after.properties.map((p) => p.key)).toEqual(['name', c.key, b.key])
+
+    // …and to the front.
+    await run((tx) => svc.databases.moveProperty(tx, WS_A, b.id, null))
+    const front = await run((tx) => svc.databases.get(tx, WS_A, db.id))
+    expect(front.properties.map((p) => p.key)).toEqual([b.key, 'name', c.key])
+  })
+
+  it('hands back a complete view configuration, not the fragment last written', async () => {
+    const { db } = await mkDatabase('Config')
+    const view = await run((tx) =>
+      svc.databases.updateView(tx, WS_A, db.views[0]!.id, {
+        config: { sorts: [{ propertyKey: 'name', direction: 'desc' }] } as never,
+      }),
+    )
+    expect(
+      view.config.filterMode,
+      'toView casting rather than parsing promises a default and hands over undefined',
+    ).toBe('and')
+    expect(view.config.columnWidths).toEqual({})
+    expect(view.config.visibleProperties).toBeNull()
+  })
+
+  it('keeps rows out of the page tree', async () => {
+    const { db, space } = await mkDatabase('TreeRows')
+    const rows = []
+    for (const title of ['one', 'two', 'three'])
+      rows.push(await addRow(db.id, space.id, db.pageId, title, {}))
+
+    const tree = await run((tx) => svc.pages.tree(tx, WS_A, space.id, false))
+    const ids = tree.map((n) => n.id)
+    expect(ids, 'the database itself is a page and belongs in the tree').toContain(db.pageId)
+    for (const row of rows)
+      expect(ids, 'five hundred rows under one node is an unusable sidebar').not.toContain(row.id)
+  })
+
+  it('finds the database a page is, and null for a page that is not one', async () => {
+    const { db, space } = await mkDatabase('ForPage')
+    const found = await run((tx) => svc.databases.forPage(tx, WS_A, db.pageId))
+    expect(found?.id).toBe(db.id)
+
+    const plain = await run((tx) =>
+      svc.pages.create(tx, alice(), WS_A, {
+        spaceId: space.id,
+        parentId: null,
+        title: 'Just prose',
+        kind: 'page',
+        icon: null,
+        afterId: null,
+      }),
+    )
+    expect(await run((tx) => svc.databases.forPage(tx, WS_A, plain.id))).toBeNull()
+  })
+
+  it('lists the databases of a space, so a relation has something to point at', async () => {
+    const made = await mkDatabase('Listed')
+    const refs = await run((tx) => svc.databases.list(tx, WS_A, made.space.id))
+    expect(refs.map((r) => r.id)).toEqual([made.db.id])
+    expect(refs[0]?.name).toBe('Listed')
+    expect(refs[0]?.pageId).toBe(made.db.pageId)
+  })
+
+  it('looks rows up by name and by id, so a relation cell can draw and search', async () => {
+    const { db, space } = await mkDatabase('Lookup')
+    const one = await addRow(db.id, space.id, db.pageId, 'Alpha one', {})
+    const two = await addRow(db.id, space.id, db.pageId, 'Beta two', {})
+
+    const searched = await run((tx) =>
+      svc.databases.lookup(tx, WS_A, db.id, { query: 'alpha', ids: [], limit: 25 }),
+    )
+    expect(searched.map((r) => r.id)).toEqual([one.id])
+
+    // The ids a cell already holds come back even when they match nothing being typed.
+    const resolved = await run((tx) =>
+      svc.databases.lookup(tx, WS_A, db.id, { query: 'zzz', ids: [one.id, two.id], limit: 25 }),
+    )
+    expect(resolved.map((r) => r.title).sort()).toEqual(['Alpha one', 'Beta two'])
   })
 })
 

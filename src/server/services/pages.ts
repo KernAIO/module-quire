@@ -94,6 +94,16 @@ export function quirePages(access: QuireAccess) {
             eq(pages.workspaceId, workspaceId),
             eq(pages.spaceId, spaceId),
             isNull(pages.deletedAt),
+            /**
+             * Rows are not in the tree.
+             *
+             * A row *is* a page parented to the database's own page, which is what makes it
+             * openable and commentable for free — but it also means a database of five hundred rows
+             * puts five hundred entries in the sidebar, under one node, in whatever order their
+             * ranks happen to give. The database's page is there; the rows are reached through it,
+             * by URL and by search.
+             */
+            isNull(pages.databaseId),
             includeArchived ? undefined : isNull(pages.archivedAt),
           ),
         )

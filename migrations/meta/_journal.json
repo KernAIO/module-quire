@@ -43,6 +43,13 @@
       "when": 1787634247157,
       "tag": "0005_rows_are_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787748000000,
+      "tag": "0006_rank_collation",
+      "breakpoints": true
     }
   ]
 }

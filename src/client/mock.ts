@@ -33,6 +33,21 @@ const iso = (msAgo = 0) => new Date(now - msAgo).toISOString()
 
 const uid = (n: number) => `01920000-0000-7000-8000-0000000${String(n).padStart(5, '0')}`
 
+/**
+ * The people the app's own mock signs you in as.
+ *
+ * Written out rather than derived: this module cannot see the shell's mock, and a comment with
+ * nobody's id on it loses the delete control only its author is offered — so the margin would look
+ * complete and be missing the one action that belongs to you.
+ *
+ * Declared here, above every factory that reads them, rather than beside the comment seed that used
+ * to own them: the page factory now stamps an author too, and it is called while the module body is
+ * still running. A `const` further down the same scope is in its temporal dead zone at that point,
+ * so the whole mock throws on import and every Quire screen renders nothing.
+ */
+const ME = '01920000-0000-7000-8000-000000000001'
+const COLLEAGUE = '01920000-0000-7000-8000-000000000002'
+
 interface Row extends Page {
   /** the mock keeps trashed rows in the same list, as the server does */
   _order: string
@@ -106,8 +121,16 @@ export function createMockQuireApi() {
     coverUrl: null,
     publishedVersionId: null,
     hasUnpublishedChanges: false,
-    createdBy: null,
-    updatedBy: null,
+    /*
+     * A seeded page has an author, because the byline reads one.
+     *
+     * These were both null, so `PageView` took its "author unknown" fallback on every page in the
+     * demo — the one environment where the byline is ever looked at — and the named path it now
+     * has shipped without anything rendering it. `ME` is the demo's signed-in member, so it
+     * resolves through `core.workspaces.members.list` like a comment's author does.
+     */
+    createdBy: ME as Page['createdBy'],
+    updatedBy: ME as Page['updatedBy'],
     createdAt: iso(9e7),
     updatedAt: iso(36e5),
     archivedAt: null,
@@ -245,16 +268,6 @@ export function createMockQuireApi() {
     row._computed = {}
     pages.push(row)
   }
-
-  /**
-   * The people the app's own mock signs you in as.
-   *
-   * Written out rather than derived: this module cannot see the shell's mock, and a comment with
-   * nobody's id on it loses the delete control only its author is offered — so the margin would
-   * look complete and be missing the one action that belongs to you.
-   */
-  const ME = '01920000-0000-7000-8000-000000000001'
-  const COLLEAGUE = '01920000-0000-7000-8000-000000000002'
 
   /**
    * What the pages used to say, and what people have asked about them.

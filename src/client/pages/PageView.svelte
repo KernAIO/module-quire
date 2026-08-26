@@ -301,7 +301,18 @@ async function trash() {
     </div>
 
     <div class="byline">
-      <Avatar id={doc.updatedBy} name={editor?.name} src={editor?.avatarUrl ?? undefined} size={24} />
+      <!--
+        No avatar for an author nobody can name.
+
+        `Avatar` with no `name` draws a "?" disc whose `title` is empty, so an unresolved author put
+        a meaningless glyph at the head of the one line whose job is to say who touched the page —
+        and a screen reader read it out as "question mark". `updatedBy` is null for every page the
+        demo seeds and for any row written before the column existed, so this is the common path,
+        not the edge. The sentence beside it already falls back to wording that claims no author.
+      -->
+      {#if editor}
+        <Avatar id={doc.updatedBy} name={editor.name} src={editor.avatarUrl ?? undefined} size={24} />
+      {/if}
       <span>
         {editor
           ? t('edited_ago_by', { when: relativeTime(doc.updatedAt), who: editor.name })

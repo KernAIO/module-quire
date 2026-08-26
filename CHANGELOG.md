@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.9.3
+
+### Patch Changes
+
+- fix(quire): say why a rollup cannot pick a column yet
+
 ## 0.9.2
 
 ### Patch Changes

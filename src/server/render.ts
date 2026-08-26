@@ -67,9 +67,26 @@ function stripUrlNoise(raw: string): string {
   return out
 }
 
+/**
+ * `\` is `/` before the query, and only there.
+ *
+ * For a special scheme — http and https are both special — the URL parser treats a backslash in the
+ * scheme, authority or path exactly as a forward slash, so `/\evil.example` *is* `//evil.example`
+ * and leaves the site. That is the same escape the `//` rule below rejects, spelled differently, and
+ * a check that reads the unfolded string is reading a different URL from the one the browser will.
+ *
+ * After the first `?` or `#` a backslash is ordinary data and the parser leaves it alone, so this
+ * stops there. Folding a query would rewrite a link that was never dangerous.
+ */
+function foldBackslashes(url: string): string {
+  const cut = url.search(/[?#]/)
+  const head = cut === -1 ? url : url.slice(0, cut)
+  return cut === -1 ? head.replaceAll('\\', '/') : head.replaceAll('\\', '/') + url.slice(cut)
+}
+
 export function safeHref(href: unknown): string | null {
   if (typeof href !== 'string') return null
-  const cleaned = stripUrlNoise(href)
+  const cleaned = foldBackslashes(stripUrlNoise(href))
   if (!cleaned) return null
   // A fragment stays on this page — that is what a table of contents links to.
   if (cleaned.startsWith('#')) return cleaned
@@ -151,10 +168,23 @@ export const MARK_RENDERERS: Record<string, MarkRenderer> = {
   },
 }
 
+/**
+ * A renderer this table actually declares, or nothing.
+ *
+ * A node's type is an XmlElement name out of the Y.Doc, which is to say a string the client picked.
+ * These tables are object literals, so `__proto__`, `constructor` and `toString` all answer with
+ * something inherited and truthy that is not a renderer — and the caller, having only checked that
+ * it got *something*, calls it and throws. An unknown node is supposed to degrade to its children;
+ * a `TypeError` escaping as a 500 from `versions.get` is the opposite of that.
+ */
+function own<T>(table: Record<string, T>, type: string | null | undefined): T | undefined {
+  return typeof type === 'string' && Object.hasOwn(table, type) ? table[type] : undefined
+}
+
 function renderMarks(html: string, marks: PageDocMark[] | null | undefined): string {
   let out = html
   for (const mark of marks ?? []) {
-    const render = MARK_RENDERERS[mark?.type ?? '']
+    const render = own(MARK_RENDERERS, mark?.type)
     if (render) out = render(out, mark.attrs)
   }
   return out
@@ -318,7 +348,7 @@ export const NODE_RENDERERS: Record<string, NodeRenderer> = {
 
 function renderNode(node: PageDocNode, options: RenderOptions): string {
   if (node.type === 'text') return renderMarks(escapeHtml(node.text ?? ''), node.marks)
-  const render = NODE_RENDERERS[node.type ?? '']
+  const render = own(NODE_RENDERERS, node.type)
   const children = (node.content ?? []).map((child) => renderNode(child, options)).join('')
   /*
    * An unknown node keeps its children rather than dropping them. This should be unreachable — the

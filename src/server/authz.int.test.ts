@@ -344,6 +344,20 @@ const deny = (userId: string, permissions: string[], scopeKind: Binding['scopeKi
     { subjectType: 'user', subjectId: userId, permissions, scopeKind, scopeId, deny: true },
   ])
 
+/** The same, at object scope on several pages at once — a restriction on one page, not the space. */
+const denyOnPages = (userId: string, permissions: string[], pageIds: string[]) =>
+  bindings.set(
+    userId,
+    pageIds.map((scopeId) => ({
+      subjectType: 'user' as const,
+      subjectId: userId,
+      permissions,
+      scopeKind: 'object' as const,
+      scopeId,
+      deny: true,
+    })),
+  )
+
 const codeOf = (err: unknown) => (err instanceof KernError ? err.code : `${(err as Error)?.name}`)
 
 describe('the reported bypass, exactly as it was reported', () => {
@@ -377,6 +391,50 @@ describe('the reported bypass, exactly as it was reported', () => {
     }
     bindings.clear()
   })
+})
+
+/*
+ * The pass above denies at **space** scope, and a space check and a page check both catch that — so
+ * it proves each procedure's permission *key* and nothing about its `check` column. Downgrading the
+ * shared `requirePage` helper to `requireSpace` left it 45/45 green, which is the whole per-page
+ * half of the model silently gone.
+ *
+ * This pass writes the narrower binding instead: a DENY at **object** scope on the pages themselves.
+ * A space-level check cannot see it — a space check asks about the space, and the space is not
+ * denied — so anything declaring `check: 'page'` must refuse here or it is not checking a page.
+ *
+ * Every page in the fixture is denied at once, because which one a procedure resolves to is the
+ * thing under test: a database procedure scopes to its host page, a row procedure to the row.
+ */
+describe('every procedure that claims to check a page', () => {
+  const inputs = () => inputFor()
+  const pageScoped = Object.entries(quireProcedureAuthz).filter(([, a]) => a.check === 'page')
+
+  it('is a set worth sweeping', () => {
+    expect(pageScoped.length, 'nothing declares check: page, so the loop below is vacuous').toBeGreaterThan(
+      20,
+    )
+  })
+
+  for (const [name, authz] of pageScoped) {
+    it(`${name} refuses a DENY bound to the page rather than the space`, async () => {
+      const who = principal(SWEEP, 'admin')
+      const input = inputs()[name]
+      expect(input, `${name} has no input in this file's fixture table`).toBeDefined()
+
+      denyOnPages(SWEEP, [authz.permission], [fixture.pageId, fixture.databasePageId, fixture.rowId])
+      const outcome = await invoke(name, input!, who).then(
+        () => 'succeeded',
+        (err) => codeOf(err),
+      )
+      bindings.clear()
+      expect(
+        outcome,
+        `${name} declares check: 'page' but let a page-scoped DENY of ${authz.permission} through — ` +
+          'which is what a space-level check does',
+      ).toBe('FORBIDDEN')
+    })
+  }
 })
 
 describe('every procedure in the contract', () => {

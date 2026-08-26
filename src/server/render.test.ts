@@ -204,8 +204,31 @@ describe('safeHref', () => {
     ['data:text/html;base64,PHNjcmlwdD4=', 'a data URL'],
     ['vbscript:msgbox(1)', 'another script scheme'],
     ['', 'nothing at all'],
+    ['/\\evil.example', 'a backslash a browser folds into the second slash of `//`'],
+    ['\\\\evil.example', 'a UNC-looking href, which is `//` once folded'],
+    ['/\\evil.example/docs', 'a backslash escape wearing a plausible path'],
   ])('rejects %s (%s)', (href) => {
     expect(safeHref(href)).toBeNull()
+  })
+
+  /*
+   * A browser folds `\` to `/` before the authority, so `/\evil.example` is `//evil.example` and
+   * leaves the site — the same escape the `//` rule exists to stop, spelled differently. It must
+   * reach the same verdict the browser will, which is the whole premise of this function.
+   */
+  it('agrees with the browser about what a backslash href resolves to', () => {
+    const base = 'https://app.kernaio.com/quire/k/x'
+    for (const href of ['/\\evil.example', '\\\\evil.example', '/\\evil.example/docs']) {
+      expect(new URL(href, base).origin).toBe('https://evil.example')
+      expect(safeHref(href)).toBeNull()
+    }
+  })
+
+  /* A backslash after the path is ordinary data — the browser does not fold it either. */
+  it('keeps a backslash that is only in the query or the fragment', () => {
+    expect(new URL('/search?q=a\\b', 'https://app.kernaio.com').origin).toBe('https://app.kernaio.com')
+    expect(safeHref('/search?q=a\\b')).toBe('/search?q=a\\b')
+    expect(safeHref('#a\\b')).toBe('#a\\b')
   })
 
   it.each([
@@ -335,5 +358,46 @@ describe('textFromPageDoc', () => {
   it('renders nothing for an empty document', () => {
     expect(textFromPageDoc(null)).toBe('')
     expect(textFromPageDoc({ type: 'doc', content: [] })).toBe('')
+  })
+})
+
+/*
+ * Node and mark types come out of Yjs XmlElement names, which a client picks. A plain object
+ * literal answers `__proto__` (and `constructor`, and `toString`) with something inherited and
+ * truthy that is not a renderer, so a lookup that only tests truthiness calls it and throws.
+ * The unknown-node rule is that the document degrades; a 500 out of `versions.get` is not that.
+ */
+describe('a node type that is a property of Object.prototype', () => {
+  it.each(['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'treats a %s node as unknown and keeps its children',
+    (type) => {
+      const html = renderPageDoc(doc({ type, content: [{ type: 'text', text: 'kept' }] }))
+      expect(html).toContain('kept')
+    },
+  )
+
+  it.each(['__proto__', 'constructor', 'toString'])('treats a %s mark as unknown', (type) => {
+    const html = renderPageDoc(
+      doc({ type: 'paragraph', content: [{ type: 'text', text: 'plain', marks: [{ type }] }] }),
+    )
+    expect(html).toBe('<p>plain</p>')
+  })
+
+  it('still draws the rest of a document that contains one', () => {
+    const html = renderPageDoc({
+      type: 'doc',
+      content: [
+        { type: '__proto__', content: [{ type: 'text', text: 'first' }] },
+        { type: 'paragraph', content: [{ type: 'text', text: 'second' }] },
+      ],
+    })
+    expect(html).toContain('first')
+    expect(html).toContain('<p>second</p>')
+  })
+
+  it('contributes its text to the search string rather than throwing', () => {
+    expect(textFromPageDoc(doc({ type: '__proto__', content: [{ type: 'text', text: 'kept' }] }))).toBe(
+      'kept',
+    )
   })
 })

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { DropdownMenu, EmptyState, Icon, IconButton, type MenuItem } from '@kernhq/ui'
+import { DropdownMenu, EmptyState, formatCount, Icon, IconButton, type MenuItem } from '@kernhq/ui'
 import { untrack } from 'svelte'
 import { dndzone, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action'
 import type { Database, Property, Row, View } from '../../contract/index.js'
@@ -152,7 +152,11 @@ const laneRule = (lane: Lane) =>
           {:else}
             <span class="none">{t('db_board_uncategorised')}</span>
           {/if}
-          <span class="count">{lane.rows.length}</span>
+          <!--
+            Through `formatCount`, not interpolated raw: a bare number is the one untranslated thing
+            left on a Persian board, where every other digit on the screen is ۰-۹.
+          -->
+          <span class="count">{formatCount(lane.rows.length, 999)}</span>
           <span class="sp"></span>
           {#if canCreate}
             <IconButton

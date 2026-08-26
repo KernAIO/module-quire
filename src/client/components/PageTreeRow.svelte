@@ -32,6 +32,24 @@ const indent = $derived(Math.min(depth, 2) as 0 | 1 | 2)
 </script>
 
 <div class="row">
+  <!--
+    Disclosure first, row second, add last — DOM order *is* tab order, and both of the other two are
+    positioned over the row rather than laid out in it. Written the other way round the keyboard
+    reached a page's chevron only after passing the page itself, which is not where it is drawn.
+  -->
+  {#if node.hasChildren}
+    <button
+      class="twisty"
+      type="button"
+      style:inset-inline-start="{indent * 22 - 4}px"
+      aria-label={isOpen ? t('collapse', { title }) : t('expand', { title })}
+      aria-expanded={isOpen}
+      onclick={() => onToggle(node.id)}
+    >
+      <span class:open={isOpen}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
+    </button>
+  {/if}
+
   <SidebarItem
     label={title}
     icon={node.kind === 'live' ? 'square-pen' : node.kind === 'database' ? 'database' : 'file-text'}
@@ -43,34 +61,27 @@ const indent = $derived(Math.min(depth, 2) as 0 | 1 | 2)
       {#if node.archivedAt}
         <span class="flag" title={t('archived')}><Icon name="archive" size={12} /></span>
       {/if}
-      {#if canCreate}
-        <span class="add">
-          <IconButton
-            icon="plus"
-            size={22}
-            variant="ghost"
-            label={t('new_child_page')}
-            onclick={(e: MouseEvent) => {
-              e.stopPropagation()
-              onCreateChild(node.id)
-            }}
-          />
-        </span>
-      {/if}
+      <!--
+        Room for the add button, which is not in here. `SidebarItem` is a `<button>`, so anything
+        interactive inside it is a button inside a button: invalid, and the row's accessible name
+        becomes "Welcome New page inside Welcome" because the name of a button is its contents.
+        The control is a sibling laid over the row's trailing edge instead, and this reserves the
+        width so a long title still ellipsises before it reaches the button.
+      -->
+      {#if canCreate}<span class="add-well"></span>{/if}
     {/snippet}
   </SidebarItem>
 
-  {#if node.hasChildren}
-    <button
-      class="twisty"
-      type="button"
-      style:inset-inline-start="{indent * 22 - 4}px"
-      aria-label={isOpen ? t('collapse') : t('expand')}
-      aria-expanded={isOpen}
-      onclick={() => onToggle(node.id)}
-    >
-      <span class:open={isOpen}><Icon name="chevron-right" size={11} strokeWidth={2} /></span>
-    </button>
+  {#if canCreate}
+    <span class="add">
+      <IconButton
+        icon="plus"
+        size={22}
+        variant="ghost"
+        label={t('new_child_page', { title })}
+        onclick={() => onCreateChild(node.id)}
+      />
+    </span>
   {/if}
 </div>
 
@@ -124,20 +135,37 @@ const indent = $derived(Math.min(depth, 2) as 0 | 1 | 2)
 .twisty span.open {
   transform: rotate(90deg);
 }
-/* The chevron points along the reading direction, so it mirrors with the document. */
+/*
+ * A closed chevron points along the reading direction, so it mirrors with the document. An open
+ * one points *down*, at the children it revealed — which is the same direction in both, and not
+ * something mirroring produces: rotating the other way turned it upside down in Persian.
+ */
 :global([dir='rtl']) .twisty span {
   transform: scaleX(-1);
 }
 :global([dir='rtl']) .twisty span.open {
-  transform: rotate(-90deg);
+  transform: rotate(90deg);
 }
 .flag {
   display: inline-flex;
   color: var(--kern-ink-400);
   flex: none;
 }
+/*
+ * Laid over the row's trailing edge rather than inside it, for the reason in the markup above.
+ * `opacity: 0` rather than `display: none` is what keeps it focusable, and `:focus-within` on the
+ * row is what makes it visible once the keyboard arrives.
+ */
 .add {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 8px;
+  transform: translateY(-50%);
+  display: inline-flex;
   opacity: 0;
+}
+.add-well {
+  width: 22px;
   flex: none;
 }
 .row:hover .add,

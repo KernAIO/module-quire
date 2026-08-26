@@ -1,8 +1,20 @@
 <script lang="ts">
-import { Avatar, Button, EmptyState, Icon, IconButton, relativeTime, Skeleton, session } from '@kernhq/ui'
+import {
+  Avatar,
+  Button,
+  coreApi,
+  EmptyState,
+  Icon,
+  IconButton,
+  keys,
+  relativeTime,
+  Skeleton,
+  session,
+} from '@kernhq/ui'
 import { RichTextEditor } from '@kernhq/ui/editor'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getQuireApi } from '../api-instance.js'
+import { type CoreApi, toPerson } from '../core-api.js'
 import { t } from '../i18n.js'
 import type { CommentThread } from '../index.js'
 import { canQuire } from '../permissions.js'
@@ -33,6 +45,7 @@ interface Props {
 const { workspaceId, pageId, activeId, orphaned, onFocus, pending, onPendingHandled }: Props = $props()
 
 const api = getQuireApi()
+const core = coreApi<CoreApi>()
 const client = useQueryClient()
 
 const query = createQuery(() => ({
@@ -41,6 +54,26 @@ const query = createQuery(() => ({
   queryFn: () => api.comments.list({ workspaceId, pageId, includeResolved: false }),
 }))
 const threads = $derived(query.data ?? [])
+
+/**
+ * Who said it.
+ *
+ * A comment carries an author id and nothing else, so without this the margin reads "3h ago" over
+ * an unlettered square — a conversation where nobody can tell who is speaking, and an avatar a
+ * screen reader passes over in silence. The same member list the database's person cells use.
+ */
+const membersQuery = createQuery(() => ({
+  queryKey: keys.members(workspaceId),
+  enabled: Boolean(workspaceId),
+  queryFn: () => core.workspaces.members.list({ workspaceId, limit: 200 }),
+}))
+const nameOf = $derived.by(() => {
+  const byId = new Map((membersQuery.data?.items ?? []).map(toPerson).map((p) => [p.id, p]))
+  // `authorId` is nullable — a comment left by somebody since removed from the workspace — and an
+  // unresolved id reads the same way, so both land on the same honest placeholder.
+  return (id: string | null) =>
+    (id ? byId.get(id) : undefined) ?? { id: id ?? '', name: t('comment_someone'), avatarUrl: null }
+})
 
 let draft = $state<unknown>(undefined)
 let replyTo = $state<string | null>(null)
@@ -112,7 +145,17 @@ async function remove(commentId: string) {
       {#if pending.quotedText}
         <p class="quoted">“{pending.quotedText}”</p>
       {/if}
-      <RichTextEditor bind:value={draft} placeholder={t('comment_placeholder')} minRows={2} />
+      <!--
+        `label`, because a rich-text field is a `contenteditable` div: without one a screen reader
+        announces "edit text" and nothing about what is being written. The placeholder is a prompt,
+        not a name — it disappears the moment somebody types.
+      -->
+      <RichTextEditor
+        bind:value={draft}
+        label={t('comment_field')}
+        placeholder={t('comment_placeholder')}
+        minRows={2}
+      />
       <div class="actions">
         <Button size="sm" variant="secondary" onclick={() => onPendingHandled?.()}>{t('cancel')}</Button>
         <Button size="sm" disabled={busy || empty(draft)} onclick={() => submit(null, draft)}>
@@ -136,18 +179,22 @@ async function remove(commentId: string) {
     />
   {:else}
     {#each threads as thread (thread.id)}
+      <!--
+        Not a `role="button"`, though it was one.
+        A thread holds a delete, a reply and a resolve, and a button's accessible name is its
+        contents — so a screen reader announced the whole conversation, its timestamps and the
+        labels of the three controls inside it, as the name of one button, and offered those
+        controls inside it anyway. Highlighting the anchored text is a *side effect* of arriving
+        here, so it happens on `focusin` for the keyboard and on click for the pointer, and the
+        thread stays a plain container with nothing to announce.
+      -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
       <div
         class="thread"
         class:active={thread.id === activeId}
-        role="button"
-        tabindex="0"
         onclick={() => onFocus?.(thread.id)}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault()
-            onFocus?.(thread.id)
-          }
-        }}
+        onfocusin={() => onFocus?.(thread.id)}
       >
         {#if thread.root.quotedText}
           <p class="quoted" class:orphan={orphaned.has(thread.id)}>“{thread.root.quotedText}”</p>
@@ -157,10 +204,12 @@ async function remove(commentId: string) {
         {/if}
 
         {#each [thread.root, ...thread.replies] as comment (comment.id)}
+          {@const author = nameOf(comment.authorId)}
           <div class="comment">
-            <Avatar id={comment.authorId} size={22} />
+            <Avatar id={author.id} name={author.name} src={author.avatarUrl} size={22} />
             <div class="bubble">
               <div class="who">
+                <span class="author">{author.name}</span>
                 <span class="time">{relativeTime(comment.createdAt)}</span>
                 {#if comment.editedAt}<span class="edited">{t('comment_edited')}</span>{/if}
                 {#if comment.authorId === session.user?.id}
@@ -181,7 +230,12 @@ async function remove(commentId: string) {
 
         <div class="thread-actions">
           {#if replyTo === thread.id}
-            <RichTextEditor bind:value={replyDraft} placeholder={t('comment_reply')} minRows={1} />
+            <RichTextEditor
+              bind:value={replyDraft}
+              label={t('comment_reply_field')}
+              placeholder={t('comment_reply')}
+              minRows={1}
+            />
             <div class="actions">
               <Button size="sm" variant="secondary" onclick={() => (replyTo = null)}>{t('cancel')}</Button>
               <Button
@@ -270,6 +324,13 @@ async function remove(commentId: string) {
   gap: 6px;
   font-size: 12px;
   color: var(--kern-ink-400);
+}
+.author {
+  font-weight: 600;
+  color: var(--kern-ink-700);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .spacer {
   flex: 1;

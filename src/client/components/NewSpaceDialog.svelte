@@ -106,6 +106,7 @@ async function submit() {
     <Field label={t('space_visibility')}>
       {#snippet children(id: string)}
         <Select
+          ariaLabel={t('space_visibility')}
           {id}
           value={visibility}
           options={[

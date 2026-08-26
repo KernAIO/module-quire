@@ -134,8 +134,13 @@ async function createPage(parentId: string | null) {
 <div class="wrap">
   {#if spaceList.length > 1}
     <div class="switcher">
+      <!--
+        `ariaLabel`, because the trigger otherwise falls back to the placeholder and announces
+        itself as "Select…" — which names nothing. The chosen space is read after the label.
+      -->
       <Select
         value={activeSpace?.key ?? ''}
+        ariaLabel={t('space_choose')}
         options={spaceList.map((space) => ({ value: space.key, label: space.name }))}
         onValueChange={(v: string) => switchSpace(v)}
       />

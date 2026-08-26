@@ -89,6 +89,7 @@ $effect(() => {
     <Field label={t('db_view_kind')}>
       {#snippet children(id: string)}
         <Select
+          ariaLabel={t('db_view_kind')}
           {id}
           value={kind}
           options={VIEW_KINDS.map((v) => ({ value: v.kind, label: t(`db_kind_${v.kind}`), icon: v.icon }))}
@@ -101,6 +102,7 @@ $effect(() => {
       <Field label={t('db_group_by')} hint={groupable.length === 0 ? t('db_group_needs_column') : undefined}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_group_by')}
             {id}
             value={config.groupBy ?? ''}
             placeholder={t('db_group_none')}
@@ -116,6 +118,7 @@ $effect(() => {
       <Field label={t('db_date_property')} hint={datable.length === 0 ? t('db_date_needs_column') : undefined}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_date_property')}
             {id}
             value={config.dateProperty ?? ''}
             placeholder={t('db_date_choose')}
@@ -130,12 +133,20 @@ $effect(() => {
     {#if kind === 'gallery'}
       <Field label={t('db_cover_property')} hint={t('db_cover_unsupported')}>
         {#snippet children(id: string)}
-          <Select {id} value="" disabled placeholder={t('db_cover_none')} options={[]} />
+          <Select
+            ariaLabel={t('db_cover_property')}
+            {id}
+            value=""
+            disabled
+            placeholder={t('db_cover_none')}
+            options={[]}
+          />
         {/snippet}
       </Field>
       <Field label={t('db_card_size')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_card_size')}
             {id}
             value={config.cardSize}
             options={(['small', 'medium', 'large'] as const).map((s) => ({

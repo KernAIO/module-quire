@@ -171,6 +171,7 @@ $effect(() => {
     <Field label={t('db_property_type')} hint={property ? t('db_property_retype_hint') : undefined}>
       {#snippet children(id: string)}
         <Select
+          ariaLabel={t('db_property_type')}
           {id}
           value={type}
           options={CREATABLE_TYPES.map((option) => ({
@@ -243,6 +244,7 @@ $effect(() => {
       <Field label={t('db_number_format')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_number_format')}
             {id}
             value={config.format ?? 'plain'}
             options={['plain', 'percent', 'currency'].map((f) => ({ value: f, label: t(`db_format_${f}`) }))}
@@ -287,6 +289,7 @@ $effect(() => {
       <Field label={t('db_relation_database')} hint={t('db_relation_database_hint')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_relation_database')}
             {id}
             value={config.relationDatabaseId ?? ''}
             placeholder={t('db_relation_choose')}
@@ -303,6 +306,7 @@ $effect(() => {
       <Field label={t('db_rollup_relation')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_rollup_relation')}
             {id}
             value={config.rollupRelationPropertyId ?? ''}
             placeholder={t('db_rollup_choose')}
@@ -318,6 +322,7 @@ $effect(() => {
       <Field label={t('db_rollup_target')} hint={viaDatabaseId ? undefined : t('db_rollup_target_hint')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_rollup_target')}
             {id}
             value={config.rollupTargetPropertyId ?? ''}
             placeholder={t('db_rollup_choose')}
@@ -330,6 +335,7 @@ $effect(() => {
       <Field label={t('db_rollup_function')}>
         {#snippet children(id: string)}
           <Select
+          ariaLabel={t('db_rollup_function')}
             {id}
             value={config.rollupFunction ?? 'count'}
             options={ROLLUP_FUNCTIONS.map((fn) => ({ value: fn, label: t(`db_rollup_${fn}`) }))}

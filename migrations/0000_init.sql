@@ -1,6 +1,10 @@
+-- Every statement is guarded. `create table` and `create index` throw on a replay, and a module
+-- migration that throws takes down the whole host service rather than its own module — core hosts
+-- five. Drizzle keys applied migrations by content hash, so regenerating the journal replays every
+-- file against a schema that already has its objects.
 CREATE SCHEMA IF NOT EXISTS "mod_quire";
 --> statement-breakpoint
-CREATE TABLE "mod_quire"."pages" (
+CREATE TABLE IF NOT EXISTS "mod_quire"."pages" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"workspace_id" uuid NOT NULL,
 	"space_id" uuid NOT NULL,
@@ -21,7 +25,7 @@ CREATE TABLE "mod_quire"."pages" (
 	"deleted_at" timestamp with time zone
 );
 --> statement-breakpoint
-CREATE TABLE "mod_quire"."spaces" (
+CREATE TABLE IF NOT EXISTS "mod_quire"."spaces" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"workspace_id" uuid NOT NULL,
 	"key" text NOT NULL,
@@ -36,8 +40,8 @@ CREATE TABLE "mod_quire"."spaces" (
 	"archived_at" timestamp with time zone
 );
 --> statement-breakpoint
-CREATE INDEX "pages_ws_space_idx" ON "mod_quire"."pages" USING btree ("workspace_id","space_id","position");--> statement-breakpoint
-CREATE INDEX "pages_ws_parent_idx" ON "mod_quire"."pages" USING btree ("workspace_id","parent_id","position");--> statement-breakpoint
-CREATE INDEX "pages_ws_updated_idx" ON "mod_quire"."pages" USING btree ("workspace_id","updated_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "spaces_ws_key_uq" ON "mod_quire"."spaces" USING btree ("workspace_id","key");--> statement-breakpoint
-CREATE INDEX "spaces_ws_idx" ON "mod_quire"."spaces" USING btree ("workspace_id","created_at");
+CREATE INDEX IF NOT EXISTS "pages_ws_space_idx" ON "mod_quire"."pages" USING btree ("workspace_id","space_id","position");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pages_ws_parent_idx" ON "mod_quire"."pages" USING btree ("workspace_id","parent_id","position");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "pages_ws_updated_idx" ON "mod_quire"."pages" USING btree ("workspace_id","updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "spaces_ws_key_uq" ON "mod_quire"."spaces" USING btree ("workspace_id","key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "spaces_ws_idx" ON "mod_quire"."spaces" USING btree ("workspace_id","created_at");

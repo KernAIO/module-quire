@@ -1,5 +1,58 @@
 # @kernhq/module-quire
 
+## 0.10.0
+
+### Minor Changes
+
+- 41208ea: Show what an old version of a page actually said.
+
+  `renderPageDoc` — the only thing outside a browser that can draw a Kern page — was reachable from
+  nowhere. It was not re-exported from `src/server/index.ts`, so `@kernhq/module-quire/server` did not
+  carry it, and the whole repository mentioned it only in its own definition and its own test.
+  Meanwhile version history showed 160 characters of flattened text, which tells you a version exists
+  and nothing about the heading, the table or the paragraph you are looking for — although the bytes
+  to draw it have been in `page_versions.state` since the first migration.
+
+  `versions.get` now returns `html` beside `text`: the version as it looked, with its pictures signed
+  and its page mentions linked, escaped by the same renderer the tests exercise. Version history has a
+  **Preview** on each row that draws it. `renderPageDoc`, `textFromPageDoc`, `referencesIn`,
+  `safeHref`, `escapeHtml` and `pageDocFromState` are exported from the `./server` subpath, so
+  anything else that has to publish, export or mail a page can reach them too.
+
+### Patch Changes
+
+- 06a6b54: Check the page-scoped permission on every `databases.*` and `comments.*` procedure.
+
+  Eight `databases.*` procedures — `get`, `addProperty`, `updateProperty`, `moveProperty`,
+  `removeProperty`, `addView`, `updateView`, `removeView` — and three `comments.*` ones — `update`,
+  `remove`, `resolve` — asked only the workspace-level question that `requires()` asks. Quire's
+  permissions are declared at **space** scope, so the answer that matters comes from a space- or
+  page-scoped binding, and `requires()` never looks at one: an ordinary member carrying a space-scoped
+  DENY for `quire.page.view|edit` could still read a database's schema and add, rename, reorder and
+  delete its columns and views, and settle any thread in the space.
+
+  Each of them now resolves the page it is really acting on — a database's host page, a row's own
+  page, a comment's page — and asks `requirePage` with the permission the work needs. Nothing about
+  what a permitted caller can do changes.
+
+  `quireProcedureAuthz` in the contract declares, per procedure, what that in-handler check must be,
+  because counting middlewares is what let this through: `requires()` was present on all eleven.
+  `module.test.ts` holds that map to the contract in both directions, and `authz.int.test.ts` calls
+  every procedure against a real Postgres with one permission denied at space scope and asserts each
+  refuses — so a procedure added later without a check fails the day it is declared.
+
+- c6c4feb: Make every migration survive being applied twice.
+
+  `create policy`, `create table` and `create index` have no `if not exists`, so a replay throws —
+  and a module migration that throws takes down the **whole host service**, not just its own module.
+  `core` hosts five. A replay is not hypothetical: drizzle keys applied migrations by content hash, so
+  regenerating the journal makes every file run again against a schema that already has its objects.
+
+  0001 created its two policies unguarded and 0000 created its tables and indexes unguarded. Both are
+  guarded now, and `src/server/migrations.test.ts` applies the whole set twice and asserts one policy
+  per table — the existing idempotence assertion could not catch this, because it calls
+  `migrateModule` twice and the second call reads `__migrations`, sees the work is done and returns.
+
 ## 0.9.3
 
 ### Patch Changes

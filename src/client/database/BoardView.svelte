@@ -143,9 +143,9 @@ const laneRule = (lane: Lane) =>
     </EmptyState>
   </div>
 {:else}
-  <div class="board">
+  <div class="board" data-testid="database-board">
     {#each lanes as lane, index (lane.id)}
-      <section class="col">
+      <section class="col" data-lane={lane.id}>
         <header class="head">
           {#if lane.option}
             <OptionChip option={lane.option} compact />
@@ -180,7 +180,7 @@ const laneRule = (lane: Lane) =>
           onfinalize={(e) => finalize(index, e)}
         >
           {#each lane.rows as row (row.id)}
-            <article class="card" class:shadow={isShadow(row)}>
+            <article class="card" class:shadow={isShadow(row)} data-testid="board-card">
               <div class="card-top">
                 <h3 class="card-title">{row.title.trim() || t('untitled')}</h3>
                 <DropdownMenu items={cardMenu(row, lane)}>

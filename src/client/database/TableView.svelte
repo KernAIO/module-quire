@@ -158,7 +158,7 @@ const rowMenu = (row: Row): MenuItem[] => [
 </script>
 
 <div class="scroll">
-  <div class="rail" style:min-width="{minWidth}px">
+  <div class="rail" data-testid="database-table" style:min-width="{minWidth}px">
     <Table columns={liveTemplate} dense>
       <TableHeader>
         <TableCell header>
@@ -206,7 +206,7 @@ const rowMenu = (row: Row): MenuItem[] => [
       </TableHeader>
 
       {#each rows as row (row.id)}
-        <TableRow>
+        <TableRow data-testid="database-row" data-row-id={row.id}>
           <TableCell class="title-cell">
             {#if canEdit}
               <input

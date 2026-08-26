@@ -86,6 +86,50 @@ export function quireDatabases(kernel: Kernel, access: QuireAccess) {
   }
 
   return {
+    /**
+     * The page a database hangs on, and the page behind one of its columns or views.
+     *
+     * A database is not a scope of its own: it belongs to a page, and that page's ancestor chain is
+     * what says who may read or change it. Every `databases.*` procedure needs this answer *before*
+     * it touches anything, so the three shapes a caller can start from — a database id, a column id,
+     * a view id — each get a query rather than making the router fetch a whole `Database` and its
+     * columns to learn one uuid.
+     *
+     * `notFound` rather than null: a caller that cannot resolve the page cannot ask the permission
+     * question, and carrying on without the answer is exactly the bug these exist to close.
+     */
+    async pageOfDatabase(tx: Tx, workspaceId: string, databaseId: string): Promise<string> {
+      const [row] = await tx
+        .select({ pageId: databases.pageId })
+        .from(databases)
+        .where(and(eq(databases.workspaceId, workspaceId), eq(databases.id, databaseId)))
+        .limit(1)
+      if (!row) throw KernError.notFound('Database')
+      return row.pageId
+    },
+
+    async pageOfProperty(tx: Tx, workspaceId: string, propertyId: string): Promise<string> {
+      const [row] = await tx
+        .select({ pageId: databases.pageId })
+        .from(properties)
+        .innerJoin(databases, eq(databases.id, properties.databaseId))
+        .where(and(eq(properties.workspaceId, workspaceId), eq(properties.id, propertyId)))
+        .limit(1)
+      if (!row) throw KernError.notFound('Property')
+      return row.pageId
+    },
+
+    async pageOfView(tx: Tx, workspaceId: string, viewId: string): Promise<string> {
+      const [row] = await tx
+        .select({ pageId: databases.pageId })
+        .from(views)
+        .innerJoin(databases, eq(databases.id, views.databaseId))
+        .where(and(eq(views.workspaceId, workspaceId), eq(views.id, viewId)))
+        .limit(1)
+      if (!row) throw KernError.notFound('View')
+      return row.pageId
+    },
+
     async get(tx: Tx, workspaceId: string, databaseId: string): Promise<Database> {
       const [db] = await tx
         .select()

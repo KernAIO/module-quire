@@ -6,6 +6,7 @@ import {
   packageVersion,
   type RequestContext,
   requires,
+  type Tx,
   workspaceScoped,
 } from '@kernhq/kernel'
 import { implement } from '@orpc/server'
@@ -38,6 +39,31 @@ export function implement_(kernel: Kernel) {
     workspaceId: string,
     fn: Parameters<typeof kernel.database.withWorkspace<T>>[1],
   ) => kernel.database.withWorkspace(workspaceId, fn, { userId: context.principal.userId })
+
+  /**
+   * "May you do this to *that* page", answered through the page's ancestor chain.
+   *
+   * `requires()` on the procedure asks the workspace-level question, and a wiki's real question is
+   * never workspace-level: a space- or page-scoped binding is what expresses "everyone may read the
+   * Handbook, the design team may write it, this contractor may read one page of it", and
+   * `requires()` does not look at one. So every page-touching handler asks again, here, with the
+   * chain that only exists inside the transaction.
+   *
+   * A database has no scope of its own — it belongs to a page — so a `databases.*` procedure
+   * resolves its host page (or the row's own page) and asks exactly this. Eight of them did not,
+   * and `quireProcedureAuthz` plus `authz.int.test.ts` are what stop the ninth.
+   */
+  const requirePage = async (
+    tx: Tx,
+    context: RequestContext,
+    workspaceId: string,
+    pageId: string,
+    permission: string,
+  ) => {
+    const scope = await svc.access.scopeOf(tx, workspaceId, pageId)
+    await svc.access.requirePage(context.principal, permission, workspaceId, scope)
+    return scope
+  }
 
   /** Both, every time: the event for anything that reacts later, the change for a screen open now. */
   const announce = (
@@ -402,12 +428,22 @@ export function implement_(kernel: Kernel) {
           return toComment(row)
         }),
 
+      /**
+       * A remark is on a page, so a space that has been closed to somebody closes its margins too.
+       *
+       * These three worked from a comment id alone and never resolved the page behind it, so a
+       * space-scoped DENY stopped nobody from settling a thread — or from editing and deleting
+       * their own words on a page they had been shut out of. The author rule inside the service is
+       * a *second* question ("are these your words"), not a substitute for this one.
+       */
       update: scoped.comments.update
         .use(requires('quire.page.comment'))
         .handler(async ({ input, context }) => {
-          const row = await run(context, input.workspaceId, (tx) =>
-            svc.comments.update(tx, context.principal, input.workspaceId, input.commentId, input.body),
-          )
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const target = await svc.comments.row(tx, input.workspaceId, input.commentId)
+            await requirePage(tx, context, input.workspaceId, target.pageId, 'quire.page.comment')
+            return svc.comments.update(tx, context.principal, input.workspaceId, input.commentId, input.body)
+          })
           await announce(input.workspaceId, 'comment', row.id, 'updated', { pageId: row.pageId })
           return toComment(row)
         }),
@@ -415,9 +451,11 @@ export function implement_(kernel: Kernel) {
       remove: scoped.comments.remove
         .use(requires('quire.page.comment'))
         .handler(async ({ input, context }) => {
-          const row = await run(context, input.workspaceId, (tx) =>
-            svc.comments.remove(tx, context.principal, input.workspaceId, input.commentId),
-          )
+          const row = await run(context, input.workspaceId, async (tx) => {
+            const target = await svc.comments.row(tx, input.workspaceId, input.commentId)
+            await requirePage(tx, context, input.workspaceId, target.pageId, 'quire.page.comment')
+            return svc.comments.remove(tx, context.principal, input.workspaceId, input.commentId)
+          })
           await announce(input.workspaceId, 'comment', row.id, 'deleted', { pageId: row.pageId })
           return { ok: true as const }
         }),
@@ -426,6 +464,8 @@ export function implement_(kernel: Kernel) {
         .use(requires('quire.page.comment'))
         .handler(async ({ input, context }) => {
           const threads = await run(context, input.workspaceId, async (tx) => {
+            const target = await svc.comments.row(tx, input.workspaceId, input.commentId)
+            await requirePage(tx, context, input.workspaceId, target.pageId, 'quire.page.comment')
             const row = await svc.comments.resolve(
               tx,
               context.principal,
@@ -446,11 +486,13 @@ export function implement_(kernel: Kernel) {
     },
 
     databases: {
-      get: scoped.databases.get
-        .use(requires('quire.page.view'))
-        .handler(({ input, context }) =>
-          run(context, input.workspaceId, (tx) => svc.databases.get(tx, input.workspaceId, input.databaseId)),
-        ),
+      get: scoped.databases.get.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
+          await requirePage(tx, context, input.workspaceId, db.pageId, 'quire.page.view')
+          return db
+        }),
+      ),
 
       list: scoped.databases.list.use(requires('quire.page.view')).handler(({ input, context }) =>
         run(context, input.workspaceId, async (tx) => {
@@ -467,17 +509,15 @@ export function implement_(kernel: Kernel) {
 
       forPage: scoped.databases.forPage.use(requires('quire.page.view')).handler(({ input, context }) =>
         run(context, input.workspaceId, async (tx) => {
-          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
-          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
           return svc.databases.forPage(tx, input.workspaceId, input.pageId)
         }),
       ),
 
       lookup: scoped.databases.lookup.use(requires('quire.page.view')).handler(({ input, context }) =>
         run(context, input.workspaceId, async (tx) => {
-          const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
-          const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
-          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          const pageId = await svc.databases.pageOfDatabase(tx, input.workspaceId, input.databaseId)
+          await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.view')
           return svc.databases.lookup(tx, input.workspaceId, input.databaseId, {
             query: input.query,
             ids: input.ids,
@@ -488,8 +528,7 @@ export function implement_(kernel: Kernel) {
 
       create: scoped.databases.create.use(requires('quire.page.edit')).handler(async ({ input, context }) => {
         const db = await run(context, input.workspaceId, async (tx) => {
-          const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
-          await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.edit')
           return svc.databases.create(tx, context.principal, input.workspaceId, input)
         })
         await announce(input.workspaceId, 'page', input.pageId, 'updated', { spaceId: input.spaceId })
@@ -499,8 +538,7 @@ export function implement_(kernel: Kernel) {
       rows: scoped.databases.rows.use(requires('quire.page.view')).handler(({ input, context }) =>
         run(context, input.workspaceId, async (tx) => {
           const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
-          const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
-          await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
+          await requirePage(tx, context, input.workspaceId, db.pageId, 'quire.page.view')
           const view = input.viewId
             ? (db.views.find((v) => v.id === input.viewId) ?? null)
             : (db.views.find((v) => v.isDefault) ?? db.views[0] ?? null)
@@ -517,8 +555,7 @@ export function implement_(kernel: Kernel) {
         .handler(async ({ input, context }) => {
           const row = await run(context, input.workspaceId, async (tx) => {
             const db = await svc.databases.get(tx, input.workspaceId, input.databaseId)
-            const scope = await svc.access.scopeOf(tx, input.workspaceId, db.pageId)
-            await svc.access.requirePage(context.principal, 'quire.page.create', input.workspaceId, scope)
+            await requirePage(tx, context, input.workspaceId, db.pageId, 'quire.page.create')
             // A row is a page: created in the same space, parented to the database's own page, so it
             // is reachable, versioned and commentable like anything else.
             const created = await svc.pages.create(tx, context.principal, input.workspaceId, {
@@ -541,8 +578,7 @@ export function implement_(kernel: Kernel) {
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
           const row = await run(context, input.workspaceId, async (tx) => {
-            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.rowId)
-            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            await requirePage(tx, context, input.workspaceId, input.rowId, 'quire.page.edit')
             if (input.title !== undefined)
               await svc.pages.update(tx, context.principal, input.workspaceId, input.rowId, {
                 title: input.title,
@@ -591,13 +627,20 @@ export function implement_(kernel: Kernel) {
        * Adding a column, hiding one, or adding a view changes what *every* open tab of this
        * database is drawing, and none of these announced anything — so a second person's table kept
        * the old columns until they reloaded, which reads as their edit having been lost.
+       *
+       * And every one of them resolves the database's host page first. A column id and a view id
+       * are the only things these procedures are given, and neither carries a scope — so without
+       * `pageOfProperty`/`pageOfView` there is nothing to ask the permission question about, which
+       * is precisely why the question went unasked here and nowhere else.
        */
       addProperty: scoped.databases.addProperty
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          const property = await run(context, input.workspaceId, (tx) =>
-            svc.databases.addProperty(tx, input.workspaceId, input.databaseId, input),
-          )
+          const property = await run(context, input.workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfDatabase(tx, input.workspaceId, input.databaseId)
+            await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.addProperty(tx, input.workspaceId, input.databaseId, input)
+          })
           await announce(input.workspaceId, 'database', input.databaseId, 'updated')
           return property
         }),
@@ -606,9 +649,11 @@ export function implement_(kernel: Kernel) {
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
           const { workspaceId, propertyId, ...patch } = input
-          const property = await run(context, workspaceId, (tx) =>
-            svc.databases.updateProperty(tx, workspaceId, propertyId, patch as never),
-          )
+          const property = await run(context, workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfProperty(tx, workspaceId, propertyId)
+            await requirePage(tx, context, workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.updateProperty(tx, workspaceId, propertyId, patch as never)
+          })
           await announce(workspaceId, 'database', property.databaseId, 'updated')
           return property
         }),
@@ -616,9 +661,11 @@ export function implement_(kernel: Kernel) {
       moveProperty: scoped.databases.moveProperty
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          const property = await run(context, input.workspaceId, (tx) =>
-            svc.databases.moveProperty(tx, input.workspaceId, input.propertyId, input.afterId),
-          )
+          const property = await run(context, input.workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfProperty(tx, input.workspaceId, input.propertyId)
+            await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.moveProperty(tx, input.workspaceId, input.propertyId, input.afterId)
+          })
           await announce(input.workspaceId, 'database', property.databaseId, 'updated')
           return property
         }),
@@ -626,9 +673,11 @@ export function implement_(kernel: Kernel) {
       removeProperty: scoped.databases.removeProperty
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          const property = await run(context, input.workspaceId, (tx) =>
-            svc.databases.removeProperty(tx, input.workspaceId, input.propertyId),
-          )
+          const property = await run(context, input.workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfProperty(tx, input.workspaceId, input.propertyId)
+            await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.removeProperty(tx, input.workspaceId, input.propertyId)
+          })
           await announce(input.workspaceId, 'database', property.databaseId, 'updated')
           return { ok: true as const }
         }),
@@ -636,9 +685,11 @@ export function implement_(kernel: Kernel) {
       addView: scoped.databases.addView
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          const view = await run(context, input.workspaceId, (tx) =>
-            svc.databases.addView(tx, input.workspaceId, input.databaseId, input as never),
-          )
+          const view = await run(context, input.workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfDatabase(tx, input.workspaceId, input.databaseId)
+            await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.addView(tx, input.workspaceId, input.databaseId, input as never)
+          })
           await announce(input.workspaceId, 'database', input.databaseId, 'updated')
           return view
         }),
@@ -647,9 +698,11 @@ export function implement_(kernel: Kernel) {
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
           const { workspaceId, viewId, ...patch } = input
-          const view = await run(context, workspaceId, (tx) =>
-            svc.databases.updateView(tx, workspaceId, viewId, patch as never),
-          )
+          const view = await run(context, workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfView(tx, workspaceId, viewId)
+            await requirePage(tx, context, workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.updateView(tx, workspaceId, viewId, patch as never)
+          })
           await announce(workspaceId, 'database', view.databaseId, 'updated')
           return view
         }),
@@ -657,9 +710,11 @@ export function implement_(kernel: Kernel) {
       removeView: scoped.databases.removeView
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
-          const view = await run(context, input.workspaceId, (tx) =>
-            svc.databases.removeView(tx, input.workspaceId, input.viewId),
-          )
+          const view = await run(context, input.workspaceId, async (tx) => {
+            const pageId = await svc.databases.pageOfView(tx, input.workspaceId, input.viewId)
+            await requirePage(tx, context, input.workspaceId, pageId, 'quire.page.edit')
+            return svc.databases.removeView(tx, input.workspaceId, input.viewId)
+          })
           await announce(input.workspaceId, 'database', view.databaseId, 'updated')
           return { ok: true as const }
         }),
@@ -668,8 +723,7 @@ export function implement_(kernel: Kernel) {
         .use(requires('quire.page.edit'))
         .handler(async ({ input, context }) => {
           await run(context, input.workspaceId, async (tx) => {
-            const scope = await svc.access.scopeOf(tx, input.workspaceId, input.rowId)
-            await svc.access.requirePage(context.principal, 'quire.page.edit', input.workspaceId, scope)
+            await requirePage(tx, context, input.workspaceId, input.rowId, 'quire.page.edit')
             await svc.databases.setRelation(
               tx,
               input.workspaceId,

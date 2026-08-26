@@ -73,3 +73,86 @@ export const quirePermissions = definePermissions([
     dangerous: true,
   },
 ])
+
+/**
+ * What each procedure has to ask *inside its handler*, beyond the workspace-level `requires()`.
+ *
+ * Declared as data rather than inferred, for the same reason `quireCapabilityProcedures` is: a
+ * missing in-handler check is invisible. The procedure compiles, `requires()` is still on it, the
+ * middleware count still passes, and the only symptom is that somebody a space has denied can read
+ * and rewrite it anyway. Eight `databases.*` procedures shipped that way — a space-scoped DENY
+ * binding stopped nobody from reading a database's schema or adding, renaming, reordering and
+ * deleting its columns and views.
+ *
+ * Two tests read this and neither is satisfied by the declaration alone:
+ *
+ *   - `module.test.ts` fails when the contract and this map stop naming exactly the same
+ *     procedures, so a new procedure cannot be added without deciding what it checks;
+ *   - `authz.int.test.ts` calls every procedure named here against a real Postgres with the one
+ *     permission below denied at space scope and nothing else, so a handler that does not ask —
+ *     or asks for a different key than the one written here — fails.
+ *
+ * `check` is the scope the answer has to be resolved at, and it is not decoration:
+ *
+ *   - `page` — the page's own ancestor chain, so a restriction on a parent page reaches it. The
+ *     scope of a database procedure is the database's host page; of a row procedure, the row.
+ *   - `space` — the whole space, for something that has no one page (a tree, a trash list).
+ *   - `workspace` — the `requires()` middleware is the only gate, because there is no narrower
+ *     scope yet: `spaces.create` has no space to be scoped to.
+ *   - `filter` — a list that omits what you may not see rather than refusing. "You may not open it"
+ *     is a worse answer than not showing it, and `spaces.list` is deliberately the second.
+ */
+export interface ProcedureAuthz {
+  check: 'page' | 'space' | 'workspace' | 'filter'
+  permission: string
+}
+
+export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
+  'spaces.list': { check: 'filter', permission: 'quire.space.view' },
+  'spaces.get': { check: 'space', permission: 'quire.space.view' },
+  'spaces.create': { check: 'workspace', permission: 'quire.space.manage' },
+  'spaces.update': { check: 'space', permission: 'quire.space.manage' },
+  'spaces.archive': { check: 'space', permission: 'quire.space.manage' },
+
+  'pages.tree': { check: 'space', permission: 'quire.page.view' },
+  'pages.get': { check: 'page', permission: 'quire.page.view' },
+  'pages.trash': { check: 'space', permission: 'quire.page.edit' },
+  'pages.create': { check: 'space', permission: 'quire.page.create' },
+  'pages.update': { check: 'page', permission: 'quire.page.edit' },
+  'pages.move': { check: 'page', permission: 'quire.page.edit' },
+  'pages.archive': { check: 'page', permission: 'quire.page.edit' },
+  'pages.trashPage': { check: 'page', permission: 'quire.page.edit' },
+  'pages.restore': { check: 'page', permission: 'quire.page.edit' },
+  'pages.purge': { check: 'page', permission: 'quire.page.delete' },
+
+  'versions.list': { check: 'page', permission: 'quire.page.view' },
+  'versions.get': { check: 'page', permission: 'quire.page.view' },
+  'versions.create': { check: 'page', permission: 'quire.page.edit' },
+  'versions.restore': { check: 'page', permission: 'quire.page.edit' },
+
+  'comments.list': { check: 'page', permission: 'quire.page.view' },
+  'comments.create': { check: 'page', permission: 'quire.page.comment' },
+  'comments.update': { check: 'page', permission: 'quire.page.comment' },
+  'comments.remove': { check: 'page', permission: 'quire.page.comment' },
+  'comments.resolve': { check: 'page', permission: 'quire.page.comment' },
+
+  'databases.get': { check: 'page', permission: 'quire.page.view' },
+  'databases.forPage': { check: 'page', permission: 'quire.page.view' },
+  'databases.list': { check: 'space', permission: 'quire.space.view' },
+  'databases.lookup': { check: 'page', permission: 'quire.page.view' },
+  'databases.create': { check: 'page', permission: 'quire.page.edit' },
+  'databases.rows': { check: 'page', permission: 'quire.page.view' },
+  'databases.addRow': { check: 'page', permission: 'quire.page.create' },
+  'databases.updateRow': { check: 'page', permission: 'quire.page.edit' },
+  'databases.addProperty': { check: 'page', permission: 'quire.page.edit' },
+  'databases.updateProperty': { check: 'page', permission: 'quire.page.edit' },
+  'databases.moveProperty': { check: 'page', permission: 'quire.page.edit' },
+  'databases.removeProperty': { check: 'page', permission: 'quire.page.edit' },
+  'databases.addView': { check: 'page', permission: 'quire.page.edit' },
+  'databases.updateView': { check: 'page', permission: 'quire.page.edit' },
+  'databases.removeView': { check: 'page', permission: 'quire.page.edit' },
+  'databases.setRelation': { check: 'page', permission: 'quire.page.edit' },
+
+  'publishing.publish': { check: 'page', permission: 'quire.page.publish' },
+  'publishing.revert': { check: 'page', permission: 'quire.page.edit' },
+}

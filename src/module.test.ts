@@ -10,7 +10,26 @@
  *      that forgets the second one is readable by any member of any workspace with the module on;
  *   3. every procedure the contract says belongs to a capability is behind `requiresCapability()` —
  *      forgetting that one is invisible, because the procedure compiles, the other tests pass, and
- *      the only symptom is a workspace calling a feature it switched off.
+ *      the only symptom is a workspace calling a feature it switched off;
+ *   4. every procedure has an entry in `quireProcedureAuthz` saying what it checks *inside* the
+ *      handler, which is what `authz.int.test.ts` then proves against a real database.
+ *
+ * The fourth one is here because the second was not enough, and said so out loud. Counting
+ * middlewares told us `requires()` was present; it cannot tell us the narrower question was asked,
+ * because that question is a line inside the handler and not a middleware at all. Eight
+ * `databases.*` procedures carried `requires('quire.page.edit')` and never resolved the page, so a
+ * space-scoped DENY binding stopped nobody — and every assertion in this file passed the whole
+ * time. Anything that could be checked here would be checking the same shape from a different
+ * angle: a handler is an opaque function, and "did it call `requirePage`" is not a property of an
+ * opaque function.
+ *
+ * So the check that bites lives where the behaviour is observable — `authz.int.test.ts` calls every
+ * procedure with the permission denied and asserts it refuses — and what this file contributes is
+ * the thing that makes that loop complete: the map and the contract must name exactly the same
+ * procedures. A procedure added without an entry fails here, and an entry with no input fixture
+ * fails there, so a new procedure cannot reach `main` without somebody deciding what it checks and
+ * a real database agreeing that it does. Declaring `check: 'workspace'` is still an escape hatch,
+ * and deliberately a visible one: it is a line in a review, not an omission nobody can see.
  *
  * Add your module's real tests next to it; this one keeps working as the contract grows.
  */
@@ -23,6 +42,7 @@ import {
   quireContract,
   quireEvents,
   quirePermissions,
+  quireProcedureAuthz,
 } from './contract/index.js'
 import { implement_ } from './server/_impl.js'
 import { quireModule } from './server/index.js'
@@ -70,9 +90,23 @@ const gated = new Set(Object.values(quireCapabilityProcedures).flat())
 describe('every procedure is authorised', () => {
   it('carries both the workspace/module gate and a permission check', () => {
     for (const [name, leaf] of Object.entries(implemented)) {
-      // `workspaceScoped(MODULE_ID)` + `requires('<permission>')`
+      // `workspaceScoped(MODULE_ID)` + `requires('<permission>')`. Necessary and, on its own, not
+      // sufficient — see the note at the top of this file and the next assertion.
       expect(leaf['~orpc'].middlewares?.length ?? 0, `${name} middlewares`).toBeGreaterThanOrEqual(2)
     }
+  })
+
+  it('declares the narrower check every procedure makes inside its handler', () => {
+    // Exact, in both directions. A procedure with no entry would never be called by the sweep in
+    // `authz.int.test.ts`, and an entry naming a procedure that no longer exists would make the
+    // sweep quietly smaller than it looks.
+    expect(Object.keys(quireProcedureAuthz).sort()).toEqual(Object.keys(declared).sort())
+  })
+
+  it('names a permission this module actually declares, in every one of those entries', () => {
+    const known = new Set(quirePermissions.map((p) => p.key))
+    for (const [name, authz] of Object.entries(quireProcedureAuthz))
+      expect(known.has(authz.permission), `${name} wants undeclared "${authz.permission}"`).toBe(true)
   })
 
   it('puts a third middleware on every procedure that belongs to a capability', () => {

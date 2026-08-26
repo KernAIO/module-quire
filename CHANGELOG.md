@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.10.2
+
+### Patch Changes
+
+- fix(quire): make every screen operable by a screen reader
+
 ## 0.10.1
 
 ### Patch Changes

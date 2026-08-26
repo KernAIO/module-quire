@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.7.4
+
+### Patch Changes
+
+- fix: declare @kernhq/kernel and @kernhq/contracts as peerDependencies
+
 ## 0.7.3
 
 ### Patch Changes

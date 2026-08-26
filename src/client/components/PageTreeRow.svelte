@@ -34,7 +34,7 @@ const indent = $derived(Math.min(depth, 2) as 0 | 1 | 2)
 <div class="row">
   <SidebarItem
     label={title}
-    icon={node.kind === 'live' ? 'square-pen' : 'file-text'}
+    icon={node.kind === 'live' ? 'square-pen' : node.kind === 'database' ? 'database' : 'file-text'}
     active={activeId === node.id}
     {indent}
     onclick={() => onOpen(node.id)}

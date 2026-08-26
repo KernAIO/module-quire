@@ -47,7 +47,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.client.json --threshold error",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "lint": "biome check . && node scripts/check-ranges.mjs package.json",
+    "lint": "biome check . && node scripts/check-ranges.mjs package.json && node scripts/check-icons.mjs && node scripts/check-i18n.mjs && node scripts/check-tokens.mjs",
     "format": "biome check --write .",
     "changeset": "changeset"
   },
@@ -57,6 +57,7 @@
     "@orpc/server": "^1.15.0",
     "@tiptap/y-tiptap": "^3.0.7",
     "drizzle-orm": "^0.45.0",
+    "svelte-dnd-action": "^0.9.0",
     "yjs": "^13.6.32",
     "zod": "^4.1.0"
   },

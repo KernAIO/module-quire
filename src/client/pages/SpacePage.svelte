@@ -13,10 +13,16 @@ import PageView from './PageView.svelte'
  * If the space has a home page, that is what opening it means; otherwise this is the first thing
  * somebody sees, so it has to offer the one action that gets them out of it.
  */
+/**
+ * The shell hands a module route one `params` object and never a named prop, so reading `spaceKey`
+ * alone left the query disabled and every space rendered "Space not found".
+ */
 interface Props {
-  spaceKey: string
+  params?: Record<string, string>
+  spaceKey?: string
 }
-const { spaceKey }: Props = $props()
+const { params, spaceKey: spaceKeyProp }: Props = $props()
+const spaceKey = $derived(spaceKeyProp ?? params?.space ?? '')
 
 const api = getQuireApi()
 const workspaceSlug = $derived(navigation.workspaceSlug)

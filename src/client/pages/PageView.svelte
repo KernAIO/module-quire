@@ -18,6 +18,7 @@ import { getQuireApi } from '../api-instance.js'
 import CommentsPanel from '../components/CommentsPanel.svelte'
 import PageEditor from '../components/PageEditor.svelte'
 import VersionHistory from '../components/VersionHistory.svelte'
+import DatabaseView from '../database/DatabaseView.svelte'
 import { t } from '../i18n.js'
 import { canQuire } from '../permissions.js'
 import { quireKeys } from '../query.js'
@@ -29,11 +30,19 @@ import { quireKeys } from '../query.js'
  * says so rather than drawing an empty box that looks broken — a surface that pretends to be
  * editable and silently drops what you type is worse than one that admits it is not finished.
  */
+/**
+ * The shell mounts a module route as `<Page {workspaceId} {workspaceSlug} params rest />` — one
+ * `params` object, never named props. The named ones are kept because `SpacePage` renders this
+ * component directly with a page it already knows.
+ */
 interface Props {
-  spaceKey: string
-  pageId: string
+  params?: Record<string, string>
+  spaceKey?: string
+  pageId?: string
 }
-const { spaceKey, pageId }: Props = $props()
+const { params, spaceKey: spaceKeyProp, pageId: pageIdProp }: Props = $props()
+const spaceKey = $derived(spaceKeyProp ?? params?.space ?? '')
+const pageId = $derived(pageIdProp ?? params?.page ?? '')
 
 const api = getQuireApi()
 const client = useQueryClient()
@@ -50,6 +59,8 @@ const query = createQuery(() => ({
 const doc = $derived(query.data ?? null)
 
 const editable = $derived(canQuire('pageEdit'))
+/** A database page draws a view where the prose would be, and a table needs the whole width. */
+const isDatabase = $derived(doc?.kind === 'database')
 let title = $state('')
 let dirty = $state(false)
 let titleEl = $state<HTMLInputElement | null>(null)
@@ -166,7 +177,11 @@ async function trash() {
 </script>
 
 <div class="with-margin" class:open={showComments}>
-<Page padding="docs" maxWidth="780px">
+<Page
+  padding={isDatabase ? 'none' : 'docs'}
+  maxWidth={isDatabase ? undefined : '780px'}
+  class={isDatabase ? 'db-page' : undefined}
+>
   {#if query.isLoading}
     <Skeleton height="36px" />
     <div class="gap"></div>
@@ -281,19 +296,23 @@ async function trash() {
       </div>
     {/if}
 
-    <div class="body">
-      <PageEditor
-        {doc}
-        onpeers={(p) => (peers = p)}
-        {commentRanges}
-        {activeComment}
-        onCommentClick={(id) => (activeComment = id)}
-        oncomment={(anchor, quotedText) => {
-          pendingComment = { anchor, quotedText }
-          activeComment = null
-        }}
-      />
-    </div>
+    {#if isDatabase}
+      <DatabaseView {workspaceId} {spaceKey} {pageId} spaceId={doc.spaceId} />
+    {:else}
+      <div class="body">
+        <PageEditor
+          {doc}
+          onpeers={(p) => (peers = p)}
+          {commentRanges}
+          {activeComment}
+          onCommentClick={(id) => (activeComment = id)}
+          oncomment={(anchor, quotedText) => {
+            pendingComment = { anchor, quotedText }
+            activeComment = null
+          }}
+        />
+      </div>
+    {/if}
   {/if}
 </Page>
 
@@ -362,6 +381,17 @@ async function trash() {
 }
 .body {
   margin-block-start: 22px;
+}
+/*
+ * A database page drops the reading measure and the page padding, because the views set their own
+ * (DESIGN.md §2.7: a reading view caps, a working view fills). The title and byline keep the 28px
+ * gutter the toolbar under them already uses.
+ */
+:global(.db-page) .head {
+  padding: 24px 28px 0;
+}
+:global(.db-page) .byline {
+  padding-inline: 28px;
 }
 /*
  * The margin is a column beside the page rather than an overlay: a comment is about a specific

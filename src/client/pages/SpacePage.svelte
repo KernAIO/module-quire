@@ -35,6 +35,27 @@ const spacesQuery = createQuery(() => ({
 }))
 const space = $derived((spacesQuery.data ?? []).find((s) => s.key === spaceKey) ?? null)
 
+/*
+ * A space without a home page is not an empty space.
+ *
+ * This screen used to branch on `homepageId` alone and tell anyone whose space had no home page
+ * that it had no pages at all — while the sidebar beside it listed them. Opening a space means
+ * "show me this space", so with no home page chosen it opens the first top-level page, and the
+ * empty state is kept for the one case that is actually empty.
+ */
+const treeQuery = createQuery(() => ({
+  queryKey: quireKeys.tree(workspaceId, space?.id ?? ''),
+  enabled: Boolean(workspaceId && space && !space.homepageId),
+  queryFn: () => api.pages.tree({ workspaceId, spaceId: space?.id ?? '', includeArchived: false }),
+}))
+
+/** The first top-level page by position — the same order the sidebar draws. */
+const firstPageId = $derived(
+  (treeQuery.data ?? [])
+    .filter((p) => p.parentId === null && !p.archivedAt)
+    .sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0))[0]?.id ?? null,
+)
+
 let creating = $state(false)
 async function createFirst() {
   if (!space || creating) return
@@ -66,6 +87,10 @@ async function createFirst() {
   </div>
 {:else if space.homepageId}
   <PageView {spaceKey} pageId={space.homepageId} />
+{:else if treeQuery.isLoading}
+  <div class="pad"><Skeleton height="36px" /></div>
+{:else if firstPageId}
+  <PageView {spaceKey} pageId={firstPageId} />
 {:else}
   <div class="pad">
     <EmptyState icon="file-text" title={t('space_empty')} description={t('space_empty_desc')}>

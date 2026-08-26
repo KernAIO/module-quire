@@ -3,10 +3,12 @@ import {
   Avatar,
   Button,
   type CollabPeer,
+  coreApi,
   DropdownMenu,
   EmptyState,
   Icon,
   IconButton,
+  keys,
   navigation,
   Page,
   relativeTime,
@@ -18,6 +20,7 @@ import { getQuireApi } from '../api-instance.js'
 import CommentsPanel from '../components/CommentsPanel.svelte'
 import PageEditor from '../components/PageEditor.svelte'
 import VersionHistory from '../components/VersionHistory.svelte'
+import { type CoreApi, toPerson } from '../core-api.js'
 import DatabaseView from '../database/DatabaseView.svelte'
 import { t } from '../i18n.js'
 import { canQuire } from '../permissions.js'
@@ -51,12 +54,32 @@ const workspaceSlug = $derived(navigation.workspaceSlug)
 const workspace = $derived(session.workspaces.find((w) => w.slug === workspaceSlug))
 const workspaceId = $derived(workspace?.id ?? '')
 
+const core = coreApi<CoreApi>()
+/*
+ * Who last edited this, by name.
+ *
+ * The byline drew `<Avatar id={doc.updatedBy} />` with no name — a "?" square with an empty
+ * accessible name — over the words "Edited 1h ago", so the one line on the page whose job is to say
+ * who touched it said everything except that. The same member list the margin and the person cells
+ * read.
+ */
+const membersQuery = createQuery(() => ({
+  queryKey: keys.members(workspaceId),
+  enabled: Boolean(workspaceId),
+  queryFn: () => core.workspaces.members.list({ workspaceId, limit: 200 }),
+}))
+
 const query = createQuery(() => ({
   queryKey: quireKeys.page(workspaceId, pageId),
   enabled: Boolean(workspaceId && pageId),
   queryFn: () => api.pages.get({ workspaceId, pageId }),
 }))
 const doc = $derived(query.data ?? null)
+const editor = $derived.by(() => {
+  const id = doc?.updatedBy ?? null
+  if (!id) return null
+  return (membersQuery.data?.items ?? []).map(toPerson).find((p) => p.id === id) ?? null
+})
 
 const editable = $derived(canQuire('pageEdit'))
 /** A database page draws a view where the prose would be, and a table needs the whole width. */
@@ -278,8 +301,12 @@ async function trash() {
     </div>
 
     <div class="byline">
-      <Avatar id={doc.updatedBy} size={24} />
-      <span>{t('edited_ago', { when: relativeTime(doc.updatedAt) })}</span>
+      <Avatar id={doc.updatedBy} name={editor?.name} src={editor?.avatarUrl ?? undefined} size={24} />
+      <span>
+        {editor
+          ? t('edited_ago_by', { when: relativeTime(doc.updatedAt), who: editor.name })
+          : t('edited_ago', { when: relativeTime(doc.updatedAt) })}
+      </span>
       {#if doc.kind === 'live'}
         <span class="chip"><Icon name="square-pen" size={12} /> {t('kind_live')}</span>
       {/if}

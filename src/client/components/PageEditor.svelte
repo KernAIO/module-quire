@@ -73,12 +73,19 @@ const user = $derived({
       the narrow schema with issue descriptions, and only a page has a reader (`renderPageDoc`) able
       to draw all of this outside the browser.
     -->
+    <!--
+      `label` is not decoration: the surface carries `role="textbox"`, and a textbox with no
+      accessible name is announced as nothing at all. This is the wiki's main writing surface, so
+      it was the one control in the product that most needed a name and did not have one. The page
+      title is the honest name for it; `page_body` covers an untitled page.
+    -->
     <CollaborativeEditor
       {url}
       {name}
       {user}
       page
       placeholder={t('editor_placeholder')}
+      label={doc.title || t('page_body')}
       {onpeers}
       {onstatus}
       {commentRanges}

@@ -168,7 +168,7 @@ async function createPage(parentId: string | null) {
               void treeQuery.refetch()
             }}
           >
-            {t('common.retry')}
+            {t('retry')}
           </Button>
         {/snippet}
       </EmptyState>

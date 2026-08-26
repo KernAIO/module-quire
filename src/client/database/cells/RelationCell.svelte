@@ -108,7 +108,7 @@ const unlink = (id: string) => onchange(ids.filter((v) => v !== id))
           {#if search.isLoading}
             <div class="state"><Spinner size={16} /></div>
           {:else if search.isError}
-            <p class="state">{t('common.error')}</p>
+            <p class="state">{t('error')}</p>
           {:else if results.length === 0}
             <p class="state">{t('db_relation_none')}</p>
           {:else}

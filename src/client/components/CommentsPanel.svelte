@@ -114,7 +114,7 @@ async function remove(commentId: string) {
       {/if}
       <RichTextEditor bind:value={draft} placeholder={t('comment_placeholder')} minRows={2} />
       <div class="actions">
-        <Button size="sm" variant="secondary" onclick={() => onPendingHandled?.()}>{t('common.cancel')}</Button>
+        <Button size="sm" variant="secondary" onclick={() => onPendingHandled?.()}>{t('cancel')}</Button>
         <Button size="sm" disabled={busy || empty(draft)} onclick={() => submit(null, draft)}>
           {t('comment_post')}
         </Button>
@@ -169,7 +169,7 @@ async function remove(commentId: string) {
                     icon="trash-2"
                     size={22}
                     variant="ghost"
-                    label={t('common.delete')}
+                    label={t('delete')}
                     onclick={() => remove(comment.id)}
                   />
                 {/if}
@@ -183,7 +183,7 @@ async function remove(commentId: string) {
           {#if replyTo === thread.id}
             <RichTextEditor bind:value={replyDraft} placeholder={t('comment_reply')} minRows={1} />
             <div class="actions">
-              <Button size="sm" variant="secondary" onclick={() => (replyTo = null)}>{t('common.cancel')}</Button>
+              <Button size="sm" variant="secondary" onclick={() => (replyTo = null)}>{t('cancel')}</Button>
               <Button
                 size="sm"
                 disabled={busy || empty(replyDraft)}

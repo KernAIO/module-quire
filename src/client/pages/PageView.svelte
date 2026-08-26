@@ -189,35 +189,42 @@ async function trash() {
   {:else if query.isError}
     <EmptyState icon="triangle-alert" title={t('page_error')} description={t('page_error_desc')}>
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => void query.refetch()}>{t('common.retry')}</Button>
+        <Button variant="secondary" onclick={() => void query.refetch()}>{t('retry')}</Button>
       {/snippet}
     </EmptyState>
   {:else if !doc}
     <EmptyState icon="circle-help" title={t('page_missing')} description={t('page_missing_desc')} />
   {:else}
     <div class="head">
-      {#if editable}
-        <input
-          bind:this={titleEl}
-          class="title"
-          value={title}
-          placeholder={t('untitled')}
-          aria-label={t('page_title')}
-          oninput={(e) => {
-            title = (e.currentTarget as HTMLInputElement).value
-            dirty = true
-          }}
-          onblur={saveTitle}
-          onkeydown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              ;(e.currentTarget as HTMLInputElement).blur()
-            }
-          }}
-        />
-      {:else}
-        <h1 class="title">{doc.title.trim() || t('untitled')}</h1>
-      {/if}
+      <!--
+        The editable title is *inside* the h1 rather than instead of it. A page whose only title is
+        an `<input>` has no level-1 heading at all — which is what a screen reader looks for first,
+        and what `ux.spec.ts` fails a route on.
+      -->
+      <h1 class="title">
+        {#if editable}
+          <input
+            bind:this={titleEl}
+            class="title-field"
+            value={title}
+            placeholder={t('untitled')}
+            aria-label={t('page_title')}
+            oninput={(e) => {
+              title = (e.currentTarget as HTMLInputElement).value
+              dirty = true
+            }}
+            onblur={saveTitle}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLInputElement).blur()
+              }
+            }}
+          />
+        {:else}
+          {doc.title.trim() || t('untitled')}
+        {/if}
+      </h1>
 
       <DropdownMenu
         items={[
@@ -356,12 +363,18 @@ async function trash() {
   line-height: 1.2;
   color: var(--kern-ink-900);
   margin: 0;
+}
+.title-field {
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  margin: 0;
   border: 0;
   background: none;
   padding: 0;
-  font-family: inherit;
 }
-.title:focus {
+.title-field:focus {
   outline: none;
 }
 .byline {

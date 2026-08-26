@@ -299,7 +299,8 @@ const laneRule = (lane: Lane) =>
   color: var(--kern-ink-900);
 }
 .fields {
-  margin: 10px 5px 0 0;
+  margin-block-start: 10px;
+  margin-inline-end: 5px;
   padding: 0;
   display: flex;
   flex-direction: column;

@@ -172,9 +172,9 @@ $effect(() => {
   </div>
 
   {#snippet footer()}
-    <Button variant="secondary" onclick={onClose}>{t('common.cancel')}</Button>
+    <Button variant="secondary" onclick={onClose}>{t('cancel')}</Button>
     <Button disabled={!valid || busy || submitting} onclick={submit}>
-      {view ? t('common.save') : t('common.create')}
+      {view ? t('save') : t('create')}
     </Button>
   {/snippet}
 </Dialog>

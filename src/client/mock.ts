@@ -281,6 +281,17 @@ export function createMockQuireApi() {
     throw notFound('View')
   }
 
+  /**
+   * A copy on the way out, because a real API answers with fresh JSON every time.
+   *
+   * Handing back the live object makes the mock *look* right and behave wrongly in one specific
+   * way: TanStack's structural sharing compares the new answer with the cached one, finds the same
+   * object, and keeps the old reference — so `query.data` never changes identity, no `$derived`
+   * re-runs, and every schema change (a new column, a deleted view) is applied to the data and
+   * invisible on screen. Rows never showed it, because `toDatabaseRow` already built a new object.
+   */
+  const copy = <T>(value: T): T => structuredClone(value)
+
   const toDatabaseRow = (row: Row): DatabaseRow => ({
     id: row.id,
     databaseId: row._databaseId ?? '',
@@ -558,9 +569,12 @@ export function createMockQuireApi() {
           .filter((d) => d.spaceId === spaceId)
           .map((d) => ({ id: d.id, pageId: d.pageId, name: d.name })),
 
-      get: async ({ databaseId }: { databaseId: string }) => theDatabase(databaseId),
+      get: async ({ databaseId }: { databaseId: string }) => copy(theDatabase(databaseId)),
 
-      forPage: async ({ pageId }: { pageId: string }) => databases.find((d) => d.pageId === pageId) ?? null,
+      forPage: async ({ pageId }: { pageId: string }) => {
+        const db = databases.find((d) => d.pageId === pageId)
+        return db ? copy(db) : null
+      },
 
       create: async (input: { spaceId: string; pageId: string; name?: string; inline?: boolean }) => {
         const db: Database = {
@@ -589,7 +603,7 @@ export function createMockQuireApi() {
         for (const view of db.views) view.databaseId = db.id
         databases.push(db)
         found(input.pageId).kind = 'database'
-        return db
+        return copy(db)
       },
 
       rows: async (input: {
@@ -702,7 +716,7 @@ export function createMockQuireApi() {
           hidden: false,
         }
         db.properties.push(property)
-        return property
+        return copy(property)
       },
 
       updateProperty: async (input: {
@@ -717,7 +731,7 @@ export function createMockQuireApi() {
         if (input.type !== undefined) property.type = input.type
         if (input.config !== undefined) property.config = input.config
         if (input.hidden !== undefined) property.hidden = input.hidden
-        return property
+        return copy(property)
       },
 
       moveProperty: async (input: { propertyId: string; afterId?: string | null }) => {
@@ -732,7 +746,7 @@ export function createMockQuireApi() {
         db.properties.forEach((p, index) => {
           p.position = String(index).padStart(4, '0')
         })
-        return property
+        return copy(property)
       },
 
       removeProperty: async (input: { propertyId: string }) => {
@@ -759,7 +773,7 @@ export function createMockQuireApi() {
           isDefault: db.views.length === 0,
         }
         db.views.push(view)
-        return view
+        return copy(view)
       },
 
       updateView: async (input: {
@@ -773,7 +787,7 @@ export function createMockQuireApi() {
         if (input.kind !== undefined) view.kind = input.kind
         // Replaced wholesale, exactly as the service does it — the client must send the merged whole.
         if (input.config !== undefined) view.config = { ...BLANK_VIEW_CONFIG, ...input.config }
-        return view
+        return copy(view)
       },
 
       removeView: async (input: { viewId: string }) => {

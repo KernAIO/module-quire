@@ -122,8 +122,8 @@ async function submit() {
   </div>
 
   {#snippet footer()}
-    <Button variant="secondary" onclick={() => (open = false)}>{t('common.cancel')}</Button>
-    <Button disabled={!valid || saving} onclick={submit}>{t('common.create')}</Button>
+    <Button variant="secondary" onclick={() => (open = false)}>{t('cancel')}</Button>
+    <Button disabled={!valid || saving} onclick={submit}>{t('create')}</Button>
   {/snippet}
 </Dialog>
 

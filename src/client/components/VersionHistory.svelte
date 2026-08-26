@@ -67,9 +67,9 @@ const kindLabel = (v: PageVersion) =>
       {#each [1, 2, 3, 4] as n (n)}<Skeleton height="56px" />{/each}
     </div>
   {:else if query.isError}
-    <EmptyState icon="triangle-alert" title={t('history_error')} description={t('common.retry')}>
+    <EmptyState icon="triangle-alert" title={t('history_error')} description={t('retry')}>
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => void query.refetch()}>{t('common.retry')}</Button>
+        <Button variant="secondary" onclick={() => void query.refetch()}>{t('retry')}</Button>
       {/snippet}
     </EmptyState>
   {:else if versions.length === 0}

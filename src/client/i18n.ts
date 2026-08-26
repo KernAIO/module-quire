@@ -325,6 +325,14 @@ export const en: Record<string, Message> = {
   'quire.db_views': 'Views',
   'quire.db_visible_properties': 'Columns shown',
   'quire.db_widen': 'Widen',
+  'quire.add': 'Add',
+  'quire.cancel': 'Cancel',
+  'quire.create': 'Create',
+  'quire.delete': 'Delete',
+  'quire.error': 'Something went wrong. Try again.',
+  'quire.loading': 'Loading…',
+  'quire.retry': 'Try again',
+  'quire.save': 'Save',
 }
 
 export type QuireMessageKey = keyof typeof en
@@ -657,6 +665,14 @@ const ar: Record<string, Message> = {
   'quire.db_views': 'طرق العرض',
   'quire.db_visible_properties': 'الأعمدة المعروضة',
   'quire.db_widen': 'توسيع',
+  'quire.add': 'إضافة',
+  'quire.cancel': 'إلغاء',
+  'quire.create': 'إنشاء',
+  'quire.delete': 'حذف',
+  'quire.error': 'حدث خطأ ما. حاول مرة أخرى.',
+  'quire.loading': 'جارٍ التحميل…',
+  'quire.retry': 'أعد المحاولة',
+  'quire.save': 'حفظ',
 }
 
 const de: Record<string, Message> = {
@@ -978,6 +994,14 @@ const de: Record<string, Message> = {
   'quire.db_views': 'Ansichten',
   'quire.db_visible_properties': 'Sichtbare Spalten',
   'quire.db_widen': 'Verbreitern',
+  'quire.add': 'Hinzufügen',
+  'quire.cancel': 'Abbrechen',
+  'quire.create': 'Erstellen',
+  'quire.delete': 'Löschen',
+  'quire.error': 'Etwas ist schiefgelaufen. Versuche es erneut.',
+  'quire.loading': 'Wird geladen…',
+  'quire.retry': 'Erneut versuchen',
+  'quire.save': 'Speichern',
 }
 
 const fa: Record<string, Message> = {
@@ -1290,6 +1314,14 @@ const fa: Record<string, Message> = {
   'quire.db_views': 'نماها',
   'quire.db_visible_properties': 'ستون‌های نمایان',
   'quire.db_widen': 'پهن‌تر',
+  'quire.add': 'افزودن',
+  'quire.cancel': 'انصراف',
+  'quire.create': 'ساختن',
+  'quire.delete': 'حذف',
+  'quire.error': 'چیزی درست پیش نرفت. دوباره تلاش کنید.',
+  'quire.loading': 'در حال بارگذاری…',
+  'quire.retry': 'دوباره تلاش کنید',
+  'quire.save': 'ذخیره',
 }
 
 const tr: Record<string, Message> = {
@@ -1604,6 +1636,14 @@ const tr: Record<string, Message> = {
   'quire.db_views': 'Görünümler',
   'quire.db_visible_properties': 'Görünen sütunlar',
   'quire.db_widen': 'Genişlet',
+  'quire.add': 'Ekle',
+  'quire.cancel': 'Vazgeç',
+  'quire.create': 'Oluştur',
+  'quire.delete': 'Sil',
+  'quire.error': 'Bir şeyler ters gitti. Yeniden deneyin.',
+  'quire.loading': 'Yükleniyor…',
+  'quire.retry': 'Yeniden dene',
+  'quire.save': 'Kaydet',
 }
 
 /** In the shape `defineClientModule().messages` expects. */

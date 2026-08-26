@@ -67,6 +67,19 @@ const api = getQuireApi()
 const core = coreApi<CoreApi>()
 const client = useQueryClient()
 
+/** What a view with nothing configured looks like — the shape `ViewConfig` guarantees. */
+const BLANK_CONFIG: ViewConfig = {
+  filters: [],
+  filterMode: 'and',
+  sorts: [],
+  groupBy: null,
+  dateProperty: null,
+  visibleProperties: null,
+  columnWidths: {},
+  cardSize: 'medium',
+  coverProperty: null,
+}
+
 const PAGE_SIZE = 50
 /** What a non-paging view will show before it says it has stopped. */
 const CAP = 500
@@ -155,10 +168,27 @@ $effect(() => {
   if (inspecting && rows.length > 0 && !rows.some((r) => r.id === inspecting)) inspecting = null
 })
 
+/**
+ * The configuration on screen: the last one *written*, not the last one read back.
+ *
+ * Two rapid edits both merge from `view.config`, and until the refetch lands that is the value from
+ * before either of them — so the second silently undoes the first. Holding the pending
+ * configuration here makes successive edits compose, and shows each one immediately rather than a
+ * round trip later.
+ */
+let pending = $state.raw<{ viewId: string; config: ViewConfig; seq: number } | null>(null)
+let writes = 0
+
+const liveConfig = $derived<ViewConfig>(
+  pending && pending.viewId === view?.id ? pending.config : (view?.config ?? BLANK_CONFIG),
+)
+/** The view as the screen should draw it: the stored one, wearing whatever was written last. */
+const liveView = $derived<View | null>(view ? { ...view, config: liveConfig } : null)
+
 const properties = $derived(database ? orderedProperties(database) : [])
 const relations = $derived(properties.filter((p) => p.type === 'relation'))
 const groupProperty = $derived(
-  view?.config.groupBy ? (properties.find((p) => p.key === view.config.groupBy) ?? null) : null,
+  liveConfig.groupBy ? (properties.find((p) => p.key === liveConfig.groupBy) ?? null) : null,
 )
 
 // ---- writing ------------------------------------------------------------------------------
@@ -170,36 +200,72 @@ const refreshSchema = async () => {
 const refreshRows = () => client.invalidateQueries({ queryKey: ['quire', 'row', workspaceId, databaseId] })
 
 /**
- * One place that reports a failure, and one flag that stops a second click.
+ * One place that reports a failure, and one guard that stops a second click.
  *
- * `disabled={busy}` alone does not: the attribute reaches the button on the next render and two
- * quick clicks are one render apart, so the guard is read here in the same tick as the click.
+ * `disabled={busy}` alone does not stop it: the attribute reaches the button on the next render and
+ * two quick clicks are one render apart, so the guard is read here, in the same tick as the click.
+ *
+ * The guard is **per action**, not global. A single in-flight flag looks like the same thing and is
+ * not: choosing a filter's column, then its operator, then its value is three writes a few hundred
+ * milliseconds apart, and a global flag drops the second and the third on the floor — the panel
+ * fills in, the table never changes, and nothing on screen says why.
  */
-async function act(work: () => Promise<unknown>, after: () => Promise<unknown>) {
-  if (busy) return
+const running = new Set<string>()
+
+async function act(work: () => Promise<unknown>, after: () => Promise<unknown>, guard?: string) {
+  if (guard && running.has(guard)) return
+  if (guard) running.add(guard)
   busy = true
   try {
     await work()
     await after()
   } catch (err) {
-    toast.error(err instanceof Error && err.message ? err.message : t('common.error'))
+    toast.error(err instanceof Error && err.message ? err.message : t('error'))
   } finally {
-    busy = false
+    if (guard) running.delete(guard)
+    busy = running.size > 0
   }
 }
 
 const patchView = (patch: Partial<ViewConfig>) => {
   if (!view) return
-  // `updateView` replaces `config` wholesale, so a partial write deletes the rest of the view.
-  const config = mergeConfig(view.config, patch)
-  void act(() => api.databases.updateView({ workspaceId, viewId: view.id, config }), refreshSchema)
+  /**
+   * `updateView` replaces `config` wholesale, so the merged whole always goes — a partial write
+   * deletes the rest of the view. And it is snapshotted: the merge carries arrays straight out of
+   * the query cache, which are `$state` proxies, and a proxy cannot be `structuredClone`d — which is
+   * what the API layer does, so the request throws before it is sent and the edit never appears.
+   */
+  const config = $state.snapshot(mergeConfig(liveConfig, patch)) as ViewConfig
+  const viewId = view.id
+  const mine = ++writes
+  pending = { viewId, config, seq: mine }
+  /**
+   * Filtering, sorting and grouping decide **which rows** the server returns, and the rows query is
+   * keyed by the view's *id* — which does not change when its configuration does. Without this the
+   * filter panel fills in and the table underneath keeps showing everything, until something else
+   * happens to invalidate it.
+   */
+  const changesRows =
+    patch.filters !== undefined || patch.filterMode !== undefined || patch.sorts !== undefined
+  void act(
+    () => api.databases.updateView({ workspaceId, viewId, config }),
+    async () => {
+      await refreshSchema()
+      if (changesRows) await refreshRows()
+      // Only the newest write hands control back to the server's answer.
+      if (pending?.seq === mine) pending = null
+    },
+  )
 }
 
-const writeCell = (row: Row, property: Property, value: unknown) =>
-  act(
-    () => api.databases.updateRow({ workspaceId, rowId: row.id, props: { [property.key]: value } }),
+const writeCell = (row: Row, property: Property, value: unknown) => {
+  // A multi-select or relation cell hands back an array built from proxied state.
+  const next = $state.snapshot(value)
+  return act(
+    () => api.databases.updateRow({ workspaceId, rowId: row.id, props: { [property.key]: next } }),
     refreshRows,
   )
+}
 
 const writeTitle = (row: Row, title: string) => {
   if (title === row.title) return Promise.resolve()
@@ -219,6 +285,7 @@ const addRow = (seed: Record<string, unknown> = {}) =>
       await refreshRows()
       await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, spaceId) })
     },
+    'add-row',
   )
 
 const duplicateRow = (row: Row) =>
@@ -231,6 +298,7 @@ const duplicateRow = (row: Row) =>
         props: $state.snapshot(row.props),
       }),
     refreshRows,
+    `duplicate-${row.id}`,
   )
 
 const openPage = (row: Row) =>
@@ -255,7 +323,7 @@ const moveOnBoard = (row: Row, laneId: string) => {
 }
 
 const setDate = (row: Row, iso: string | null) => {
-  const key = view?.config.dateProperty
+  const key = liveConfig.dateProperty
   if (!key) return Promise.resolve()
   return act(
     () => api.databases.updateRow({ workspaceId, rowId: row.id, props: { [key]: iso } }),
@@ -299,19 +367,19 @@ const hideProperty = (property: Property) =>
 
 const sortBy = (property: Property, direction: 'asc' | 'desc' | null) => {
   if (!view) return
-  const rest = view.config.sorts.filter((s) => s.propertyKey !== property.key)
+  const rest = liveConfig.sorts.filter((s) => s.propertyKey !== property.key)
   patchView({ sorts: direction ? [{ propertyKey: property.key, direction }, ...rest] : rest })
 }
 
 const sortDirectionOf = (key: string) =>
-  view?.config.sorts.find((s) => s.propertyKey === key)?.direction ?? null
+  liveConfig.sorts.find((s) => s.propertyKey === key)?.direction ?? null
 
 function filterBy(property: Property) {
   if (!view) return
-  const already = view.config.filters.some((f) => f.propertyKey === property.key)
+  const already = liveConfig.filters.some((f) => f.propertyKey === property.key)
   if (!already) {
     const operator = descriptorFor(property.type).operators[0] ?? 'equals'
-    patchView({ filters: [...view.config.filters, { propertyKey: property.key, operator, value: null }] })
+    patchView({ filters: [...liveConfig.filters, { propertyKey: property.key, operator, value: null }] })
   }
   filterOpen = true
 }
@@ -343,6 +411,7 @@ function confirmed() {
         await refreshSchema()
         await refreshRows()
       },
+      `delete-property-${target.property.id}`,
     )
   else if (target.kind === 'view')
     void act(
@@ -352,6 +421,7 @@ function confirmed() {
         if (chosenViewId === target.view.id) chosenViewId = null
         await refreshSchema()
       },
+      `delete-view-${target.view.id}`,
     )
   else
     void act(
@@ -362,6 +432,7 @@ function confirmed() {
         await refreshRows()
         await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, spaceId) })
       },
+      `delete-row-${target.row.id}`,
     )
 }
 
@@ -389,7 +460,7 @@ const confirmBody = $derived(
 const groupItems = $derived<MenuItem[]>([
   {
     type: 'radio',
-    value: view?.config.groupBy ?? '',
+    value: liveConfig.groupBy ?? '',
     options: [
       { value: '', label: t('db_group_none') },
       ...properties
@@ -469,7 +540,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
             void rowsQuery.refetch()
           }}
         >
-          {t('common.retry')}
+          {t('retry')}
         </Button>
       {/snippet}
     </EmptyState>
@@ -500,7 +571,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
   <Toolbar>
     <FilterMenu
       {database}
-      config={view?.config ?? { filters: [], filterMode: 'and', sorts: [], groupBy: null, dateProperty: null, visibleProperties: null, columnWidths: {}, cardSize: 'medium', coverProperty: null }}
+      config={liveConfig}
       {workspaceId}
       {people}
       {canEdit}
@@ -510,16 +581,16 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
     />
     <SortMenu
       {database}
-      config={view?.config ?? { filters: [], filterMode: 'and', sorts: [], groupBy: null, dateProperty: null, visibleProperties: null, columnWidths: {}, cardSize: 'medium', coverProperty: null }}
+      config={liveConfig}
       {canEdit}
       open={sortOpen}
       onOpenChange={(o) => (sortOpen = o)}
       onchange={patchView}
     />
-    {#if view?.kind === 'board'}
+    {#if liveView?.kind === 'board'}
       <DropdownMenu items={groupItems} align="start">
         {#snippet trigger(props: Record<string, unknown>)}
-          <ToolbarButton {...props} prefix={t('db_by')} active={Boolean(view?.config.groupBy)}>
+          <ToolbarButton {...props} prefix={t('db_by')} active={Boolean(liveConfig.groupBy)}>
             {groupProperty?.name ?? t('db_group_none')}
           </ToolbarButton>
         {/snippet}
@@ -561,7 +632,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
       {/if}
       <TableView
         {database}
-        {view}
+        view={liveView}
         {rows}
         {people}
         {workspaceId}
@@ -591,14 +662,14 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
             disabled={rowsQuery.isFetchingNextPage}
             onclick={() => void rowsQuery.fetchNextPage()}
           >
-            {rowsQuery.isFetchingNextPage ? t('common.loading') : t('db_load_more')}
+            {rowsQuery.isFetchingNextPage ? t('loading') : t('db_load_more')}
           </Button>
         </div>
       {/if}
     {:else if view.kind === 'board'}
       <BoardView
         {database}
-        {view}
+        view={liveView}
         {rows}
         {people}
         {workspaceId}
@@ -619,7 +690,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
     {:else if view.kind === 'gallery'}
       <GalleryView
         {database}
-        {view}
+        view={liveView}
         {rows}
         {people}
         {workspaceId}
@@ -631,7 +702,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
     {:else if view.kind === 'list'}
       <ListView
         {database}
-        {view}
+        view={liveView}
         {rows}
         {people}
         {workspaceId}
@@ -643,7 +714,7 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
     {:else}
       <CalendarView
         {database}
-        {view}
+        view={liveView}
         {rows}
         {canEdit}
         onOpenRow={(row) => (inspecting = row.id)}
@@ -707,8 +778,8 @@ const failed = $derived(forPage.isError || databaseQuery.isError || rowsQuery.is
 >
   <p class="confirm">{confirmBody}</p>
   {#snippet footer()}
-    <Button variant="secondary" onclick={() => (confirming = null)}>{t('common.cancel')}</Button>
-    <Button variant="danger" disabled={busy} onclick={confirmed}>{t('common.delete')}</Button>
+    <Button variant="secondary" onclick={() => (confirming = null)}>{t('cancel')}</Button>
+    <Button variant="danger" disabled={busy} onclick={confirmed}>{t('delete')}</Button>
   {/snippet}
 </Dialog>
 

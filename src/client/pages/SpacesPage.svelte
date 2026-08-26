@@ -54,7 +54,7 @@ function open(key: string) {
   {:else if spacesQuery.isError}
     <EmptyState icon="triangle-alert" title={t('spaces_error')} description={t('spaces_error_desc')}>
       {#snippet actions()}
-        <Button variant="secondary" onclick={() => void spacesQuery.refetch()}>{t('common.retry')}</Button>
+        <Button variant="secondary" onclick={() => void spacesQuery.refetch()}>{t('retry')}</Button>
       {/snippet}
     </EmptyState>
   {:else if spaceList.length === 0}

@@ -87,7 +87,7 @@ const formulaError = $derived.by(() => {
     parseFormula(expression)
     return null
   } catch (err) {
-    return err instanceof FormulaError || err instanceof Error ? err.message : t('common.error')
+    return err instanceof FormulaError || err instanceof Error ? err.message : t('error')
   }
 })
 
@@ -362,9 +362,9 @@ $effect(() => {
   </div>
 
   {#snippet footer()}
-    <Button variant="secondary" onclick={onClose}>{t('common.cancel')}</Button>
+    <Button variant="secondary" onclick={onClose}>{t('cancel')}</Button>
     <Button disabled={!valid || busy || submitting} onclick={submit}>
-      {property ? t('common.save') : t('common.add')}
+      {property ? t('save') : t('add')}
     </Button>
   {/snippet}
 </Dialog>

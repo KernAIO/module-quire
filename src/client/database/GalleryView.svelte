@@ -143,7 +143,7 @@ const menu = (row: Row): MenuItem[] => [
   color: var(--kern-ink-900);
 }
 .fields {
-  margin: 0 5px 0 0;
+  margin-inline-end: 5px;
   padding: 0;
   display: flex;
   flex-direction: column;

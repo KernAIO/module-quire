@@ -1,9 +1,13 @@
 import type {
+  Comment,
+  CommentAnchor,
+  CommentThread,
   Database,
   DatabaseRef,
   Row as DatabaseRow,
   Page,
   PageNode,
+  PageVersion,
   Property,
   PropertyConfig,
   PropertyType,
@@ -113,8 +117,13 @@ export function createMockQuireApi() {
   })
 
   const pages: Row[] = [
-    page(101, uid(1), 'Welcome', 'a'),
-    page(102, uid(1), 'Working here', 'b'),
+    page(101, uid(1), 'Welcome', 'a', null, { publishedVersionId: uid(152) }),
+    // A page with a draft readers cannot see yet, so the banner above the body is reachable. The
+    // server only ever sets this on a page that has been published once, and neither does this.
+    page(102, uid(1), 'Working here', 'b', null, {
+      publishedVersionId: uid(153),
+      hasUnpublishedChanges: true,
+    }),
     page(103, uid(1), 'Your first week', 'ba', 102),
     page(104, uid(1), 'Time off', 'bb', 102),
     page(105, uid(1), 'Expenses', 'c', null, { kind: 'live' }),
@@ -237,6 +246,138 @@ export function createMockQuireApi() {
     pages.push(row)
   }
 
+  /**
+   * The people the app's own mock signs you in as.
+   *
+   * Written out rather than derived: this module cannot see the shell's mock, and a comment with
+   * nobody's id on it loses the delete control only its author is offered — so the margin would
+   * look complete and be missing the one action that belongs to you.
+   */
+  const ME = '01920000-0000-7000-8000-000000000001'
+  const COLLEAGUE = '01920000-0000-7000-8000-000000000002'
+
+  /**
+   * What the pages used to say, and what people have asked about them.
+   *
+   * Seeded rather than left empty. Version history and the comment margin are two of the three
+   * things a page screen is for, and until these existed the demo interface answered the history
+   * sheet with "The history could not be loaded" and never drew a margin at all — in exactly the
+   * environment used for demos and end-to-end tests. Two pages differ on purpose, so a page with a
+   * margin and a page without one are both reachable.
+   */
+  const version = (
+    n: number,
+    pageId: string,
+    kind: PageVersion['kind'],
+    label: string | null,
+    preview: string,
+    msAgo: number,
+    authorId: string,
+  ): PageVersion => ({
+    id: uid(n),
+    workspaceId: '' as PageVersion['workspaceId'],
+    pageId,
+    kind,
+    label,
+    preview,
+    // The server reports the length of the encoded document; the order of magnitude is all any
+    // screen does with it.
+    size: preview.length * 4,
+    authorId: authorId as PageVersion['authorId'],
+    createdAt: iso(msAgo),
+    // Which version readers are served is a property of the page, so it is worked out on the way
+    // out rather than stored here twice and left to disagree with itself.
+    published: false,
+  })
+
+  const versions: PageVersion[] = [
+    version(150, uid(101), 'publish', 'The first handbook', 'Welcome to Northstar.', 9e7, ME),
+    version(
+      151,
+      uid(101),
+      'auto',
+      null,
+      'Welcome to Northstar. We are a small team and we write things down.',
+      108e5,
+      COLLEAGUE,
+    ),
+    version(
+      152,
+      uid(101),
+      'publish',
+      null,
+      'Welcome to Northstar. We are a small team and we write things down, so that nobody has to ask the same question twice.',
+      72e5,
+      ME,
+    ),
+    version(153, uid(102), 'publish', null, 'How this team works, in one page.', 108e5, ME),
+    version(
+      154,
+      uid(102),
+      'auto',
+      null,
+      'How this team works, in one page. Start with your first week.',
+      36e5,
+      COLLEAGUE,
+    ),
+  ]
+
+  const richDoc = (text: string): Record<string, unknown> => ({
+    type: 'doc',
+    content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+  })
+
+  /** The same dumb walk the server does: whatever the editor produced, minus everything but text. */
+  const flatten = (body: unknown): string => {
+    const out: string[] = []
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== 'object') return
+      const n = node as { text?: unknown; content?: unknown[] }
+      if (typeof n.text === 'string') out.push(n.text)
+      if (Array.isArray(n.content)) for (const child of n.content) walk(child)
+    }
+    walk(body)
+    return out.join(' ').replace(/\s+/g, ' ').trim()
+  }
+
+  const comment = (
+    n: number,
+    pageId: string,
+    threadId: string,
+    parentId: string | null,
+    authorId: string,
+    text: string,
+    msAgo: number,
+  ): Comment => ({
+    id: uid(n),
+    workspaceId: '' as Comment['workspaceId'],
+    pageId,
+    parentId,
+    threadId,
+    authorId: authorId as Comment['authorId'],
+    body: richDoc(text),
+    bodyText: text,
+    mentionIds: [],
+    /*
+     * No anchor, and none of these quote anything.
+     *
+     * An anchor is a pair of Yjs relative positions into a document that only exists behind the
+     * collab service, and there is no collab service here — a made-up one would point at nothing
+     * and the editor would draw a highlight over the wrong words, which is worse than no highlight.
+     */
+    anchor: null,
+    quotedText: '',
+    resolvedAt: null,
+    resolvedBy: null,
+    editedAt: null,
+    createdAt: iso(msAgo),
+  })
+
+  const comments: Comment[] = [
+    comment(160, uid(101), uid(160), null, COLLEAGUE, 'Should this mention the on-call rota?', 72e5),
+    comment(161, uid(101), uid(160), uid(160), ME, 'Good point — I will link to it from here.', 36e5),
+  ]
+
   let seq = 900
   const nextId = () => uid(++seq)
   const strip = ({ _order, ...p }: Row): Page => p
@@ -260,6 +401,43 @@ export function createMockQuireApi() {
   }
 
   const notFound = (what: string) => Object.assign(new Error(`${what} not found`), { code: 'NOT_FOUND' })
+
+  const theVersion = (id: string): PageVersion => {
+    const found = versions.find((v) => v.id === id)
+    if (!found) throw notFound('Version')
+    return found
+  }
+  const theComment = (id: string): Comment => {
+    const found = comments.find((c) => c.id === id)
+    if (!found) throw notFound('Comment')
+    return found
+  }
+
+  /** Which version a reader is served, which the list and the sheet both have to agree about. */
+  const publishedOn = (pageId: string) => pages.find((p) => p.id === pageId)?.publishedVersionId ?? null
+  const asVersion = (v: PageVersion): PageVersion => ({ ...v, published: v.id === publishedOn(v.pageId) })
+
+  /**
+   * Write down what the page says now, exactly where the server takes a version.
+   *
+   * There is no document behind this, so the newest version's prose stands in for the live one —
+   * enough that restoring writes a new row saying what it restored, which is the behaviour the
+   * history sheet is judged on.
+   */
+  const capture = (pageId: string, kind: PageVersion['kind'], label: string | null, preview?: string) => {
+    const latest = versions.filter((v) => v.pageId === pageId).at(-1)
+    const taken = version(
+      ++seq,
+      pageId,
+      kind,
+      label,
+      preview ?? latest?.preview ?? found(pageId).title,
+      0,
+      ME,
+    )
+    versions.push(taken)
+    return taken
+  }
 
   const theDatabase = (id: string): Database => {
     const db = databases.find((d) => d.id === id)
@@ -560,6 +738,165 @@ export function createMockQuireApi() {
         const ids = new Set(subtree(pageId).map((r) => r.id))
         for (let i = pages.length - 1; i >= 0; i--) if (ids.has(pages[i]!.id)) pages.splice(i, 1)
         return { ok: true as const, count: ids.size }
+      },
+    },
+
+    versions: {
+      list: async ({ pageId, limit = 50 }: { pageId: string; limit?: number }) => ({
+        // Newest first, and the ids sort because they are minted in order — the same thing the
+        // server gets from ordering on a uuidv7.
+        items: versions
+          .filter((v) => v.pageId === pageId)
+          .sort((a, b) => (a.id < b.id ? 1 : -1))
+          .slice(0, limit)
+          .map(asVersion),
+        nextCursor: null,
+      }),
+
+      get: async ({ versionId }: { versionId: string }) => {
+        const found = theVersion(versionId)
+        return {
+          ...asVersion(found),
+          text: found.preview,
+          // The server renders the stored document; the escaping is the part worth keeping, since
+          // a screen hands this straight to a renderer.
+          html: `<p>${found.preview.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`,
+        }
+      },
+
+      create: async ({ pageId, label = null }: { pageId: string; label?: string | null }) =>
+        asVersion(capture(pageId, 'auto', label)),
+
+      restore: async ({ versionId }: { versionId: string }) => {
+        const wanted = theVersion(versionId)
+        // The state about to be replaced is captured first, so restoring is itself undoable — the
+        // reason the sheet offers it without a confirmation.
+        capture(wanted.pageId, 'auto', null)
+        const restored = capture(wanted.pageId, 'restore', wanted.label, wanted.preview)
+        touch(found(wanted.pageId))
+        return asVersion(restored)
+      },
+    },
+
+    comments: {
+      list: async ({
+        pageId,
+        includeResolved = false,
+      }: {
+        pageId: string
+        includeResolved?: boolean
+      }): Promise<CommentThread[]> => {
+        const byThread = new Map<string, Comment[]>()
+        for (const c of comments.filter((c) => c.pageId === pageId)) {
+          byThread.set(c.threadId, [...(byThread.get(c.threadId) ?? []), c])
+        }
+        const threads: CommentThread[] = []
+        for (const [threadId, list] of byThread) {
+          const ordered = [...list].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1))
+          // A thread whose root was deleted while replies remain is still somebody's conversation,
+          // so the oldest remaining comment leads it — as it does on the server.
+          const lead = ordered.find((c) => c.id === threadId) ?? ordered[0]
+          if (!lead) continue
+          const resolved = Boolean(lead.resolvedAt)
+          if (resolved && !includeResolved) continue
+          threads.push({
+            id: threadId,
+            root: structuredClone(lead),
+            replies: ordered.filter((c) => c.id !== lead.id).map((c) => structuredClone(c)),
+            resolved,
+          })
+        }
+        return threads
+      },
+
+      create: async (input: {
+        pageId: string
+        body: Record<string, unknown>
+        anchor?: CommentAnchor | null
+        quotedText?: string
+        parentId?: string | null
+      }) => {
+        const parent = input.parentId ? theComment(input.parentId) : null
+        const id = nextId()
+        const made: Comment = {
+          id,
+          workspaceId: '' as Comment['workspaceId'],
+          pageId: input.pageId,
+          parentId: parent?.id ?? null,
+          // A reply belongs to the thread its parent is in, never to a thread of its own.
+          threadId: parent?.threadId ?? id,
+          authorId: ME as Comment['authorId'],
+          body: input.body,
+          bodyText: flatten(input.body),
+          mentionIds: [],
+          anchor: input.anchor ?? null,
+          quotedText: input.quotedText ?? '',
+          resolvedAt: null,
+          resolvedBy: null,
+          editedAt: null,
+          createdAt: new Date().toISOString(),
+        }
+        comments.push(made)
+        return structuredClone(made)
+      },
+
+      update: async ({ commentId, body }: { commentId: string; body: Record<string, unknown> }) => {
+        const found = theComment(commentId)
+        found.body = body
+        found.bodyText = flatten(body)
+        found.editedAt = new Date().toISOString()
+        return structuredClone(found)
+      },
+
+      remove: async ({ commentId }: { commentId: string }) => {
+        const found = theComment(commentId)
+        comments.splice(comments.indexOf(found), 1)
+        return { ok: true as const }
+      },
+
+      resolve: async ({ commentId, resolved = true }: { commentId: string; resolved?: boolean }) => {
+        const lead = theComment(commentId)
+        // Resolving is a property of the conversation, so it is written on the comment that leads
+        // it and read from there — never on each reply.
+        lead.resolvedAt = resolved ? new Date().toISOString() : null
+        lead.resolvedBy = resolved ? (ME as Comment['resolvedBy']) : null
+        const rest = comments.filter((c) => c.threadId === lead.threadId && c.id !== lead.id)
+        return {
+          id: lead.threadId,
+          root: structuredClone(lead),
+          replies: rest.map((c) => structuredClone(c)),
+          resolved,
+        }
+      },
+    },
+
+    publishing: {
+      publish: async ({ pageId, label = null }: { pageId: string; label?: string | null }) => {
+        const row = found(pageId)
+        if (row.kind !== 'page')
+          throw Object.assign(new Error('Only a page has a published version; a live doc is always live'), {
+            code: 'BAD_REQUEST',
+          })
+        const taken = capture(pageId, 'publish', label)
+        row.publishedVersionId = taken.id
+        row.hasUnpublishedChanges = false
+        touch(row)
+        return strip(row)
+      },
+
+      revert: async ({ pageId }: { pageId: string }) => {
+        const row = found(pageId)
+        if (!row.publishedVersionId)
+          throw Object.assign(
+            new Error('This page has never been published, so there is nothing to go back to'),
+            { code: 'BAD_REQUEST' },
+          )
+        // The draft being discarded is kept, because discarding it should not be a way to lose an
+        // afternoon's writing with no way back.
+        capture(pageId, 'auto', null)
+        row.hasUnpublishedChanges = false
+        touch(row)
+        return strip(row)
       },
     },
 

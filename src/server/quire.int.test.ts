@@ -10,10 +10,13 @@
 import { randomUUID } from 'node:crypto'
 import type { Principal } from '@kernhq/contracts'
 import { CollabAccess, CollabAccessInput } from '@kernhq/contracts'
-import { createKernel, type Kernel, type Tx } from '@kernhq/kernel'
+import { createKernel, type Kernel, type RequestContext, type Tx } from '@kernhq/kernel'
+import { call } from '@orpc/server'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import * as Y from 'yjs'
 import type { Page, PageNode, Space } from '../contract/index.js'
+import { implement_ } from './_impl.js'
 import { quireModule } from './index.js'
 import { type QuireServices, quireServices } from './services/index.js'
 
@@ -584,6 +587,93 @@ describe('versions, drafts and publishing', () => {
       listed.items.map((v) => v.preview),
       'the state that was replaced has to survive, or restoring is how you lose work',
     ).toContain('the bad rewrite')
+  })
+
+  /**
+   * A page written by hand as Yjs, because that is the only shape a version is ever stored in.
+   *
+   * The collab stub above keeps a "document" as a string, which is enough to tell a replace from a
+   * merge and nothing like enough to draw. This builds the real thing — a paragraph with a bold run
+   * and a mention of another page — so the render path is exercised end to end rather than against
+   * a fixture somebody wrote to match the assertion.
+   */
+  const yjsPage = (mentionId: string, mentionLabel: string): Buffer => {
+    const doc = new Y.Doc()
+    const paragraph = new Y.XmlElement('paragraph')
+    const text = new Y.XmlText()
+    text.insert(0, 'plain ')
+    text.insert(6, 'bold', { bold: {} })
+    const mention = new Y.XmlElement('pageMention')
+    mention.setAttribute('id', mentionId)
+    mention.setAttribute('label', mentionLabel)
+    paragraph.insert(0, [text, mention])
+    doc.getXmlFragment('default').insert(0, [paragraph])
+    const state = Buffer.from(Y.encodeStateAsUpdate(doc))
+    doc.destroy()
+    return state
+  }
+
+  it('draws a stored version as HTML, with its page mentions linked', async () => {
+    const mentioned = await newPage({ title: 'Linked to' })
+    const html = await run((tx) => svc.versions.html(tx, WS_A, yjsPage(mentioned.id, 'Linked to')))
+
+    expect(html, 'the marks are what a plain-text preview throws away').toContain('<strong>bold</strong>')
+    expect(
+      html,
+      'a mention has to resolve to /quire/<space key>/<page id> or it is not a link at all',
+    ).toContain(`href="/quire/${space.key}/${mentioned.id}"`)
+  })
+
+  it('hands that HTML to whoever asks for the version, through the router', async () => {
+    // The point of the render is that a *client* can get at it. `versions.get` is the route that
+    // carries it, and its output schema now says so — so a handler that forgot the field would
+    // fail oRPC's output validation here rather than quietly returning a version without one.
+    const page = await newPage({ title: 'Fetched' })
+    const mentioned = await newPage({ title: 'Mentioned' })
+    await write(page.id, 'something to version')
+    const [version] = await run(async (tx) => {
+      const row = await svc.versions.capture(tx, WS_A, page.id, {
+        kind: 'auto',
+        label: null,
+        authorId: ALICE,
+      })
+      return [row]
+    })
+    // `capture` stores whatever the collab stub holds, which is a string; replace it with a real
+    // document so the row under test is the shape a real one has.
+    await kernel.database.db.execute(
+      `update mod_quire.page_versions set state = decode('${yjsPage(mentioned.id, 'Mentioned').toString(
+        'hex',
+      )}', 'hex') where id = '${version!.id}'`,
+    )
+
+    const router = implement_(kernel)
+    const fetched = await call(
+      // biome-ignore lint/suspicious/noExplicitAny: the leaf is reached as data, so it is untyped
+      router.versions.get as any,
+      { workspaceId: WS_A, versionId: version!.id },
+      {
+        context: {
+          kernel,
+          principal: alice(),
+          requestId: randomUUID(),
+          ip: '127.0.0.1',
+          headers: {},
+        } as RequestContext,
+      },
+    )
+    expect((fetched as { html: string }).html).toContain('<strong>bold</strong>')
+  })
+
+  it('leaves a mention of a page it cannot address as readable text', async () => {
+    const html = await run((tx) => svc.versions.html(tx, WS_A, yjsPage(randomUUID(), 'Gone')))
+    expect(html).toContain('<span class="kern-page-mention"')
+    expect(html, 'a link to nothing is worse than a label').not.toContain('<a class="kern-page-mention"')
+  })
+
+  it('renders nothing at all for a version whose bytes will not decode', async () => {
+    expect(await run((tx) => svc.versions.html(tx, WS_A, Buffer.from('not yjs')))).toBe('')
+    expect(await run((tx) => svc.versions.html(tx, WS_A, null))).toBe('')
   })
 
   it('refuses to revert a page that has never been published', async () => {

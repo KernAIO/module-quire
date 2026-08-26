@@ -335,6 +335,28 @@ export function renderPageDoc(doc: PageDoc | null | undefined, options: RenderOp
   return doc.content.map((node) => renderNode(node, options)).join('')
 }
 
+/**
+ * Everything in a document that has to be looked up before it can be drawn.
+ *
+ * `renderPageDoc` is synchronous on purpose — a pure function of a document and two lookup tables —
+ * so a caller that needs a database row or a signed URL collects the ids here, resolves them all in
+ * one pass, and hands the answers back as `RenderOptions`. Resolving inside the renderer would mean
+ * one round trip per picture, in render order, on a request that is otherwise two queries.
+ *
+ * Both lists are de-duplicated: the same picture used twice is one signature, not two.
+ */
+export function referencesIn(doc: PageDoc | null | undefined): { fileIds: string[]; pageIds: string[] } {
+  const fileIds = new Set<string>()
+  const pageIds = new Set<string>()
+  const walk = (node: PageDocNode): void => {
+    if (node.type === 'image' && typeof node.attrs?.fileId === 'string') fileIds.add(node.attrs.fileId)
+    if (node.type === 'pageMention' && typeof node.attrs?.id === 'string') pageIds.add(node.attrs.id)
+    for (const child of node.content ?? []) walk(child)
+  }
+  for (const node of doc?.content ?? []) walk(node)
+  return { fileIds: [...fileIds], pageIds: [...pageIds] }
+}
+
 /** Nodes whose children are separate blocks, so their text needs a line between each. */
 const BLOCK_PARENTS = new Set([
   'blockquote',

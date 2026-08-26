@@ -1,10 +1,10 @@
 import type { CollabDocumentState, Principal } from '@kernhq/contracts'
 import { KernError, type Kernel, type Tx, uuidv7 } from '@kernhq/kernel'
-import { and, desc, eq, lt } from 'drizzle-orm'
+import { and, desc, eq, inArray, lt } from 'drizzle-orm'
 import type { PageVersion } from '../../contract/index.js'
-import { pageDocFromBase64 } from '../document.js'
-import { textFromPageDoc } from '../render.js'
-import { pages, pageVersions } from '../schema.js'
+import { pageDocFromBase64, pageDocFromState } from '../document.js'
+import { referencesIn, renderPageDoc, textFromPageDoc } from '../render.js'
+import { pages, pageVersions, spaces } from '../schema.js'
 import type { QuireAccess } from './access.js'
 import { documentNameOf } from './pages.js'
 
@@ -216,6 +216,65 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
     documentState(workspaceId: string, pageId: string) {
       return kernel.call<CollabDocumentState>('collab.document.state', {
         name: documentNameOf({ workspaceId, id: pageId }),
+      })
+    },
+
+    /**
+     * A stored version drawn as HTML, with its pictures signed and its page mentions linked.
+     *
+     * This is what a version is *for*: `preview` is 160 characters of flattened text, which tells
+     * you a version exists and nothing about what it said. The bytes to answer properly have been
+     * in `page_versions.state` since the first migration, and `renderPageDoc` has known how to draw
+     * them since it was written — nothing joined the two, so the server could store a document, flatten
+     * it, and still not show it to anybody.
+     *
+     * The two resolvers are why it is here rather than in `render.ts`: that file is pure, and both
+     * a signed picture URL and a page's `/quire/<key>/<id>` address need something outside the
+     * document. `referencesIn` collects the ids in one walk so this is two queries and a
+     * signature per distinct picture, whatever the order they appear in.
+     *
+     * Everything degrades rather than failing. A version that will not decode renders as an empty
+     * string; a picture whose file has been deleted, or whose storage is not configured, is dropped
+     * rather than drawn as a broken image; a mention of a purged page stays as its label. None of
+     * those is worth turning a read of somebody's history into an error.
+     */
+    async html(tx: Tx, workspaceId: string, state: Buffer | Uint8Array | null): Promise<string> {
+      const doc = pageDocFromState(state)
+      if (!doc) return ''
+      const { fileIds, pageIds } = referencesIn(doc)
+
+      const hrefs = new Map<string, string>()
+      if (pageIds.length > 0) {
+        const rows = await tx
+          .select({ id: pages.id, key: spaces.key })
+          .from(pages)
+          .innerJoin(spaces, eq(spaces.id, pages.spaceId))
+          .where(and(eq(pages.workspaceId, workspaceId), inArray(pages.id, pageIds)))
+        for (const row of rows) hrefs.set(row.id, `/quire/${row.key}/${row.id}`)
+      }
+
+      const sources = new Map<string, string>()
+      await Promise.all(
+        fileIds.map(async (id) => {
+          try {
+            const file = await kernel.call<{ key: string; mimeType: string } | null>('core.files.get', { id })
+            if (!file?.key) return
+            sources.set(
+              id,
+              await kernel.storage.presignGet(file.key, {
+                disposition: 'inline',
+                contentType: file.mimeType,
+              }),
+            )
+          } catch (err) {
+            kernel.log.warn({ err: String(err), fileId: id }, 'could not sign a picture for a version')
+          }
+        }),
+      )
+
+      return renderPageDoc(doc, {
+        fileSrc: (id) => sources.get(id) ?? null,
+        pageHref: (id) => hrefs.get(id) ?? null,
       })
     },
   }

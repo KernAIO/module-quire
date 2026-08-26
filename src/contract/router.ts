@@ -144,11 +144,18 @@ export const quireContract = {
       .route({ method: 'GET', path: '/pages/{pageId}/versions', ...t('versions') })
       .input(ws.extend({ pageId: Id }).extend(PageInput.shape))
       .output(page(PageVersion)),
-    /** The prose of one version, rendered as text — enough to read it and to diff it. */
+    /**
+     * One version's prose, both ways it is worth having.
+     *
+     * `text` is flat — what a diff and a search snippet want. `html` is the version *as it looked*:
+     * headings, lists, tables, callouts, its pictures signed and its page mentions linked, escaped
+     * and safe to hand to a renderer. The bytes for it have always been stored; nothing drew them,
+     * so the only thing anybody could see of an old version was 160 characters of flattened text.
+     */
     get: baseContract
       .route({ method: 'GET', path: '/versions/{versionId}', ...t('versions') })
       .input(ws.extend({ versionId: Id }))
-      .output(PageVersion.extend({ text: z.string() })),
+      .output(PageVersion.extend({ text: z.string(), html: z.string() })),
     /** Take one now, and give it a name. */
     create: baseContract
       .route({ method: 'POST', path: '/pages/{pageId}/versions', ...t('versions') })

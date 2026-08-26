@@ -36,6 +36,22 @@ const versions = $derived(query.data?.items ?? [])
 let restoring = $state<string | null>(null)
 let error = $state<string | null>(null)
 
+/**
+ * Which version is open, and what it said.
+ *
+ * A row shows 160 characters of flattened text, which tells you a version exists and nothing about
+ * what was in it — the headings, the table, the paragraph somebody is looking for. The document is
+ * stored; `versions.get` draws it. Fetched only when a row is opened, because the whole point of
+ * the list is that it loads without fifty documents behind it.
+ */
+let previewing = $state<string | null>(null)
+
+const preview = createQuery(() => ({
+  queryKey: [...quireKeys.page(workspaceId, pageId), 'version', previewing],
+  enabled: previewing !== null,
+  queryFn: () => api.versions.get({ workspaceId, versionId: previewing as string }),
+}))
+
 async function restore(version: PageVersion) {
   if (restoring) return
   restoring = version.id
@@ -94,6 +110,16 @@ const kindLabel = (v: PageVersion) =>
                 <p class="preview">{version.preview}</p>
               {/if}
             </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-expanded={previewing === version.id}
+              onclick={() => {
+                previewing = previewing === version.id ? null : version.id
+              }}
+            >
+              {previewing === version.id ? t('version_preview_hide') : t('version_preview')}
+            </Button>
             {#if canQuire('pageEdit') && version.id !== publishedVersionId}
               <Button
                 size="sm"
@@ -105,6 +131,20 @@ const kindLabel = (v: PageVersion) =>
               </Button>
             {/if}
           </div>
+          {#if previewing === version.id}
+            <div class="body">
+              {#if preview.isLoading}
+                <Skeleton height="72px" />
+              {:else if preview.isError}
+                <p class="error" role="alert">{t('version_preview_error')}</p>
+              {:else if preview.data?.html}
+                <!-- Every value in it is escaped by the server's renderer; see src/server/render.ts. -->
+                <div class="kern-prose">{@html preview.data.html}</div>
+              {:else}
+                <p class="empty">{t('version_preview_empty')}</p>
+              {/if}
+            </div>
+          {/if}
         </ListRow>
       {/each}
     </div>
@@ -155,5 +195,20 @@ const kindLabel = (v: PageVersion) =>
   margin: 0 0 10px;
   font-size: 13px;
   color: var(--kern-danger);
+}
+.body {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: var(--kern-r-card);
+  background: var(--kern-surface-raised);
+  font-size: 13px;
+  /* A version can hold a wide table; it scrolls inside this box rather than pushing the sheet. */
+  overflow-x: auto;
+}
+.empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--kern-ink-400);
 }
 </style>

@@ -351,7 +351,11 @@ export function implement_(kernel: Kernel) {
           const scope = await svc.access.scopeOf(tx, input.workspaceId, row.pageId)
           await svc.access.requirePage(context.principal, 'quire.page.view', input.workspaceId, scope)
           const page = await svc.access.pageRow(tx, input.workspaceId, row.pageId)
-          return { ...toVersion(row, page.publishedVersionId), text: row.text }
+          return {
+            ...toVersion(row, page.publishedVersionId),
+            text: row.text,
+            html: await svc.versions.html(tx, input.workspaceId, row.state),
+          }
         }),
       ),
 

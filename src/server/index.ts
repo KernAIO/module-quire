@@ -59,6 +59,29 @@ function requireService(principal: Principal): void {
   if (principal.kind !== 'service' && !principal.instanceAdmin) throw KernError.forbidden()
 }
 
+/**
+ * The page renderer, on the package's `./server` subpath.
+ *
+ * `renderPageDoc` is the only thing outside a browser that can draw a Kern page, and it was
+ * reachable from nowhere: not re-exported here, so `@kernhq/module-quire/server` did not carry it,
+ * and its only mentions in the repository were its own definition and its own test. Anything that
+ * has to publish, export or mail a page needs it, and none of them could import it.
+ *
+ * `pageDocFromState` goes with it, because the renderer takes a `PageDoc` and every stored page is
+ * Yjs bytes — handing out one without the other is handing out half a tool.
+ */
+export { pageDocFromBase64, pageDocFromState } from './document.js'
+export {
+  escapeHtml,
+  MARK_RENDERERS,
+  NODE_RENDERERS,
+  type RenderOptions,
+  referencesIn,
+  renderPageDoc,
+  safeHref,
+  textFromPageDoc,
+} from './render.js'
+
 export const quireModule = defineServerModule({
   definition: defineModule({
     id: MODULE_ID,

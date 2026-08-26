@@ -314,7 +314,8 @@ $effect(() => {
       {#if relations.length === 0}
         <p class="hint">{t('db_rollup_needs_relation')}</p>
       {/if}
-      <Field label={t('db_rollup_target')}>
+      <!-- Disabled *with a reason*: there is nothing to gather until a relation is chosen. -->
+      <Field label={t('db_rollup_target')} hint={viaDatabaseId ? undefined : t('db_rollup_target_hint')}>
         {#snippet children(id: string)}
           <Select
             {id}

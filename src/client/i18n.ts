@@ -333,6 +333,8 @@ export const en: Record<string, Message> = {
   'quire.loading': 'Loading…',
   'quire.retry': 'Try again',
   'quire.save': 'Save',
+  'quire.db_rollup_target_hint':
+    'Choose the relation first; the column comes from the database on its other side.',
 }
 
 export type QuireMessageKey = keyof typeof en
@@ -673,6 +675,7 @@ const ar: Record<string, Message> = {
   'quire.loading': 'جارٍ التحميل…',
   'quire.retry': 'أعد المحاولة',
   'quire.save': 'حفظ',
+  'quire.db_rollup_target_hint': 'اختر العلاقة أولًا؛ يأتي العمود من قاعدة البيانات على الطرف الآخر.',
 }
 
 const de: Record<string, Message> = {
@@ -1002,6 +1005,8 @@ const de: Record<string, Message> = {
   'quire.loading': 'Wird geladen…',
   'quire.retry': 'Erneut versuchen',
   'quire.save': 'Speichern',
+  'quire.db_rollup_target_hint':
+    'Wähle zuerst die Beziehung; die Spalte kommt aus der Datenbank auf ihrer anderen Seite.',
 }
 
 const fa: Record<string, Message> = {
@@ -1322,6 +1327,7 @@ const fa: Record<string, Message> = {
   'quire.loading': 'در حال بارگذاری…',
   'quire.retry': 'دوباره تلاش کنید',
   'quire.save': 'ذخیره',
+  'quire.db_rollup_target_hint': 'نخست پیوند را برگزینید؛ ستون از پایگاه‌دادهٔ آن سوی پیوند می‌آید.',
 }
 
 const tr: Record<string, Message> = {
@@ -1644,6 +1650,7 @@ const tr: Record<string, Message> = {
   'quire.loading': 'Yükleniyor…',
   'quire.retry': 'Yeniden dene',
   'quire.save': 'Kaydet',
+  'quire.db_rollup_target_hint': 'Önce ilişkiyi seçin; sütun onun diğer ucundaki veritabanından gelir.',
 }
 
 /** In the shape `defineClientModule().messages` expects. */

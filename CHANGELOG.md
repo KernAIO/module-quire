@@ -1,5 +1,43 @@
 # @kernhq/module-quire
 
+## 0.10.1
+
+### Patch Changes
+
+- 278e061: Close two holes in the static renderer, now that something calls it.
+
+  `safeHref` rejected `//evil.example` and accepted `/\evil.example`, which is the same URL: for a
+  special scheme the URL parser folds a backslash into a forward slash before the authority, so the
+  second one resolves to `https://evil.example` too. Backslashes are now folded before the check —
+  up to the first `?` or `#`, which is exactly as far as a browser folds them — so the check reads the
+  URL the browser will act on. A backslash in a query or a fragment is left alone.
+
+  `renderNode` and `renderMarks` indexed an object literal with a type name out of the document, so a
+  node called `__proto__` (or `constructor`, or `toString`) found something inherited and truthy that
+  was not a renderer, and calling it threw `TypeError: render is not a function` — a 500 out of
+  `versions.get`, where the rule is that an unrecognised node degrades to its children. Both lookups
+  now require an own property.
+
+  Neither was reachable until the version preview gave `renderPageDoc` its first caller.
+
+  The authz sweep also gained a second pass. The first denies at space scope, which a space check and
+  a page check both catch, so it proved each procedure's permission key and nothing about its `check`
+  column — downgrading the page check to a space check left it green. The new pass denies at object
+  scope on the pages themselves, which only a page-level check can see, and covers all 34 procedures
+  declaring `check: 'page'`.
+
+- 253f36a: Reach the published framework, and refresh the lockfile that the range edit invalidated.
+
+  `^0.9.0` cannot install `@kernhq/ui@0.10.0` — a caret on 0.x never crosses a minor — so a consumer
+  installing this module from the registry resolved a framework it was not built against. Raising the
+  range then leaves the committed `pnpm-lock.yaml` out of date with the manifest, and
+  `--frozen-lockfile` compares specifiers, so the next publish dies at install having built nothing.
+  Both halves are here because one without the other is not a fix.
+
+  `scripts/check-ranges.mjs` now checks the lockfile as well, so the second half cannot be forgotten
+  again — and checks this package's hosts against its peers, which `pnpm install` does not: pnpm 10
+  resolved a `^0.6.1` peer against `contracts@0.5.2` and exited 0 without a warning.
+
 ## 0.10.0
 
 ### Minor Changes

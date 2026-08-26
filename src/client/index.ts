@@ -37,6 +37,37 @@ export {
   type SpaceVisibility,
   type VersionKind,
 } from '../contract/index.js'
+export type { CoreMember, Person } from './core-api.js'
+export { OPTION_COLOURS, toneFor } from './database/colours.js'
+export {
+  CREATABLE_TYPES,
+  descriptorFor,
+  isReadOnly,
+  operatorsFor,
+  PROPERTY_TYPES,
+  type PropertyDescriptor,
+  VIEW_KINDS,
+  viewIcon,
+} from './database/property-types.js'
+export {
+  columnTemplate,
+  EMPTY_GROUP,
+  groupsOf,
+  groupValue,
+  type Lane,
+  mergeConfig,
+  orderedProperties,
+  visiblePropertiesOf,
+} from './database/view-config.js'
+export type { Ast, FormulaValue } from './formula.js'
+/**
+ * The formula parser, for the property editor.
+ *
+ * Only the parser: `evaluateFormula` stays a server concern, because a formula is evaluated against
+ * a row and the server is the only thing holding one. What a client needs is to tell somebody their
+ * expression is wrong while they are typing it, and which columns it reads.
+ */
+export { FormulaError, formulaDependencies, parseFormula } from './formula.js'
 export * from './rank.js'
 
 /**

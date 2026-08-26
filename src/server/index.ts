@@ -12,6 +12,8 @@ import {
   quirePermissions,
 } from '../contract/index.js'
 import { defineModule, defineServerModule, implement_, packageVersion } from './_impl.js'
+import { pageDocFromBase64 } from './document.js'
+import { textFromPageDoc } from './render.js'
 import { pages, schema, spaces } from './schema.js'
 import { quireServices } from './services/index.js'
 import { createNotify } from './services/notify.js'
@@ -209,6 +211,31 @@ export const quireModule = defineServerModule({
       if (payload.module !== MODULE_ID || payload.type !== 'page') return
 
       const svc = quireServices(kernel)
+
+      /*
+       * `payload.text` is not used, and that is the whole point of this call.
+       *
+       * The collab service flattens a document by calling `toString()` on each `Y.XmlText`, which
+       * renders marks *as markup* — so a page holding a single link contributed
+       * `<link class="null" href="…" rel="noopener noreferrer nofollow" target="_blank">` to the
+       * search body, and every page in the workspace matched a search for "noopener". Fetching the
+       * state and flattening it properly costs one call per open document per snapshot interval,
+       * which defaults to five minutes.
+       *
+       * The published text stays as the fallback: a collab hiccup should leave the search body
+       * as it was rather than empty it.
+       */
+      const flattened = await svc.versions
+        .documentState(payload.workspaceId, payload.objectId)
+        .then((state) => {
+          const decoded = pageDocFromBase64(state.state)
+          return decoded ? textFromPageDoc(decoded) : null
+        })
+        .catch((err) => {
+          kernel.log.warn({ err: String(err), pageId: payload.objectId }, 'could not flatten the document')
+          return null
+        })
+
       await kernel.database.withWorkspace(payload.workspaceId, async (tx) => {
         const [page] = await tx
           .select()
@@ -221,7 +248,7 @@ export const quireModule = defineServerModule({
         await tx
           .update(pages)
           .set({
-            text: payload.text,
+            text: flattened ?? payload.text,
             // A `page` diverges from what readers see; a `live` doc has nothing to diverge from.
             hasUnpublishedChanges:
               page.kind === 'page' && page.publishedVersionId !== null ? true : page.hasUnpublishedChanges,

@@ -67,10 +67,17 @@ const user = $derived({
   <EmptyState icon="triangle-alert" title={t('editor_no_session')} description={t('editor_no_session_desc')} />
 {:else}
   {#key name}
+    <!--
+      `page` is what selects the wide wiki schema — tables, callouts, toggles, task lists, images,
+      six heading levels. It is opt-in for a reason: a comment box shares this component and shares
+      the narrow schema with issue descriptions, and only a page has a reader (`renderPageDoc`) able
+      to draw all of this outside the browser.
+    -->
     <CollaborativeEditor
       {url}
       {name}
       {user}
+      page
       placeholder={t('editor_placeholder')}
       {onpeers}
       {onstatus}

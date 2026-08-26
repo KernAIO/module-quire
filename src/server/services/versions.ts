@@ -2,6 +2,8 @@ import type { CollabDocumentState, Principal } from '@kernhq/contracts'
 import { KernError, type Kernel, type Tx, uuidv7 } from '@kernhq/kernel'
 import { and, desc, eq, lt } from 'drizzle-orm'
 import type { PageVersion } from '../../contract/index.js'
+import { pageDocFromBase64 } from '../document.js'
+import { textFromPageDoc } from '../render.js'
 import { pages, pageVersions } from '../schema.js'
 import type { QuireAccess } from './access.js'
 import { documentNameOf } from './pages.js'
@@ -61,6 +63,14 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
         .limit(1)
 
       const state = Buffer.from(taken.state, 'base64')
+      /*
+       * Flattened from the state that is being stored, not copied from `pages.text`.
+       *
+       * `pages.text` is what the collab service published, and its flatten renders marks as markup
+       * — a page with one link contributed `rel="noopener noreferrer nofollow"` to the preview and
+       * to search. Decoding here costs nothing extra: the bytes are already in hand.
+       */
+      const decoded = pageDocFromBase64(taken.state)
       const [version] = await tx
         .insert(pageVersions)
         .values({
@@ -71,7 +81,9 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
           label: opts.label ?? null,
           state,
           snapshot: Buffer.from(taken.snapshot, 'base64'),
-          text: row?.text ?? '',
+          // The mirrored column is the fallback, so a document that will not decode still gets a
+          // version — losing the preview is a small thing; not taking the version is somebody's work.
+          text: decoded ? textFromPageDoc(decoded) : (row?.text ?? ''),
           size: state.length,
           authorId: opts.authorId ?? null,
         })

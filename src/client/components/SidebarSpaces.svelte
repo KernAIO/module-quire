@@ -10,6 +10,7 @@ import {
   session,
 } from '@kernhq/ui'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { untrack } from 'svelte'
 import { getQuireApi } from '../api-instance.js'
 import { t } from '../i18n.js'
 import { buildPageTree, type PageTreeNode } from '../index.js'
@@ -76,18 +77,31 @@ const matches = $derived(
   query ? nodes.filter((n) => (n.title || t('untitled')).toLowerCase().includes(query)) : [],
 )
 
-/** A page opened from a link may be nested; its ancestors have to be open for it to be visible. */
+/**
+ * A page opened from a link may be nested; its ancestors have to be open for it to be visible.
+ *
+ * `expanded` is read through `untrack` because this effect also writes it. Tracked, the write makes
+ * the effect its own trigger: collapsing an ancestor of the open page removed it from the set, the
+ * effect re-ran and put it straight back, and the disclosure was inert — click it, press Enter on
+ * it, nothing moves. That is the "effect that reads a flag it also clears" trap already written
+ * down in shell's CLAUDE.md, and it was invisible until `navigation.params.page` started arriving:
+ * with `activePageId` permanently null the loop never ran at all.
+ *
+ * What genuinely selects this effect is which page is open and what the tree contains. Whether a
+ * disclosure is open is the *result*, and a result must not be an input.
+ */
 $effect(() => {
   if (!activePageId || nodes.length === 0) return
   const byId = new Map(nodes.map((n) => [n.id, n]))
-  const next = new Set(expanded)
+  const current = untrack(() => expanded)
+  const next = new Set(current)
   let cursor = byId.get(activePageId)?.parentId ?? null
   let guard = 0
   while (cursor && guard++ < 100) {
     next.add(cursor)
     cursor = byId.get(cursor)?.parentId ?? null
   }
-  if (next.size !== expanded.size) expanded = next
+  if (next.size !== current.size) expanded = next
 })
 
 function toggle(id: string) {

@@ -5,18 +5,24 @@ import type {
   Database,
   DatabaseRef,
   Row as DatabaseRow,
+  FavoriteEntry,
+  Label,
+  LabelColour,
   Page,
   PageNode,
   PageVersion,
   Property,
   PropertyConfig,
   PropertyType,
+  RecentEntry,
   RowRef,
   Space,
   View,
   ViewConfig,
   ViewKind,
+  WatchState,
 } from '../contract/index.js'
+import { rankBetween, rankSequence } from './rank.js'
 
 /**
  * The in-memory quire API.
@@ -150,6 +156,16 @@ export function createMockQuireApi() {
     page(103, uid(1), 'Your first week', 'ba', 102),
     page(104, uid(1), 'Time off', 'bb', 102),
     page(105, uid(1), 'Expenses', 'c', null, { kind: 'live' }),
+    /*
+     * A subtree in the trash, because that is the case the trash screen exists for.
+     *
+     * Deleting a page takes everything under it, and the flat listing the server answers with has
+     * one row per page — so a demo whose trash holds a single orphan never exercises the grouping,
+     * which is the whole difference between "one page was deleted" and "three were". These two are
+     * a parent and its child, deleted together.
+     */
+    page(106, uid(1), 'Old expenses policy', 'ca', null, { deletedAt: iso(1728e5) }),
+    page(107, uid(1), 'Receipts', 'caa', 106, { deletedAt: iso(1728e5) }),
     page(110, uid(1), 'Onboarding tasks', 'd', null, { kind: 'database' }),
     page(201, uid(2), 'Architecture', 'a'),
     page(202, uid(2), 'Runbooks', 'b'),
@@ -391,6 +407,70 @@ export function createMockQuireApi() {
     comment(161, uid(101), uid(160), uid(160), ME, 'Good point — I will link to it from here.', 36e5),
   ]
 
+  /**
+   * How a space is organised, and what one person has made of it.
+   *
+   * Seeded rather than left empty for the same reason the versions and comments above are: a screen
+   * with no data in the demo is a screen the end-to-end sweep cannot see, so an empty favourites
+   * group and an empty label picker would ship without anything ever rendering the populated case.
+   *
+   * Two spaces on purpose. Labels belong to a space — two teams both wanting "Draft" should not
+   * have to agree on what it means — and a seed with one space's vocabulary would let a bug that
+   * leaks labels across the boundary pass unnoticed.
+   */
+  const label = (n: number, spaceId: string, name: string, colour: LabelColour, msAgo: number): Label => ({
+    id: uid(n),
+    workspaceId: '' as Label['workspaceId'],
+    spaceId,
+    name,
+    colour,
+    createdAt: iso(msAgo),
+  })
+
+  const labels: Label[] = [
+    label(300, uid(1), 'Draft', 'warning', 8e7),
+    label(301, uid(1), 'Needs review', 'info', 79e6),
+    label(302, uid(1), 'Reference', 'purple', 78e6),
+    label(303, uid(2), 'ADR', 'slate', 77e6),
+  ]
+
+  /** page id → label ids. A page wears a set, and `pages.setLabels` replaces the whole of it. */
+  const pageLabels = new Map<string, string[]>([
+    [uid(101), [uid(302)]],
+    [uid(102), [uid(300), uid(301)]],
+    [uid(103), [uid(300)]],
+    [uid(201), [uid(303)]],
+  ])
+
+  /**
+   * One person's shortcuts, in the order they arranged them.
+   *
+   * Ranks come from the real `rankBetween` rather than from the plain sortable strings the rest of
+   * this file uses. Reordering favourites is a drag, so the mock is the only thing the interaction
+   * is ever tested against — and a second implementation of fractional indexing is a second place
+   * for it to be wrong. Three of them, across two spaces, because a favourite is a workspace list
+   * and a demo confined to one space would never show that.
+   */
+  const favouriteSeed = rankSequence(3)
+  const favorites: { pageId: string; position: string; createdAt: string }[] = [
+    { pageId: uid(101), position: favouriteSeed[0] as string, createdAt: iso(72e5) },
+    { pageId: uid(105), position: favouriteSeed[1] as string, createdAt: iso(54e5) },
+    { pageId: uid(202), position: favouriteSeed[2] as string, createdAt: iso(36e5) },
+  ]
+
+  /** page id → the people watching it. Deliberately not the same list as the favourites above. */
+  const watchers = new Map<string, string[]>([
+    [uid(101), [ME, COLLEAGUE]],
+    [uid(102), [COLLEAGUE]],
+  ])
+
+  /** One row per page, bumped in place — never a visit log. */
+  const recents: { pageId: string; viewedAt: string }[] = [
+    { pageId: uid(102), viewedAt: iso(6e5) },
+    { pageId: uid(110), viewedAt: iso(18e5) },
+    { pageId: uid(201), viewedAt: iso(9e6) },
+  ]
+
   let seq = 900
   const nextId = () => uid(++seq)
   const strip = ({ _order, ...p }: Row): Page => p
@@ -471,6 +551,73 @@ export function createMockQuireApi() {
     }
     throw notFound('View')
   }
+
+  const theLabel = (id: string): Label => {
+    const found = labels.find((l) => l.id === id)
+    if (!found) throw notFound('Label')
+    return found
+  }
+
+  /**
+   * The page fields a shortcut row draws — or nothing, when the page has been trashed or purged.
+   *
+   * The server composes these with a join to `pages`, which is why a favourite whose page is gone
+   * simply stops being drawn: the row survives (nothing cascades from a purge), and every read
+   * joins. Reproducing that here is the difference between a demo where trashing a favourited page
+   * quietly removes it from the sidebar and one where the sidebar keeps a shortcut to nothing.
+   */
+  const pageBitsOf = (pageId: string) => {
+    const row = pages.find((p) => p.id === pageId && !p.deletedAt)
+    return row ? { spaceId: row.spaceId, title: row.title, icon: row.icon, kind: row.kind } : null
+  }
+
+  const byPosition = (a: { position: string }, b: { position: string }) =>
+    a.position < b.position ? -1 : a.position > b.position ? 1 : 0
+
+  const favoriteList = (): FavoriteEntry[] =>
+    [...favorites].sort(byPosition).flatMap((f) => {
+      const bits = pageBitsOf(f.pageId)
+      if (!bits) return []
+      return [
+        {
+          workspaceId: '' as FavoriteEntry['workspaceId'],
+          userId: ME as FavoriteEntry['userId'],
+          pageId: f.pageId,
+          position: f.position,
+          createdAt: f.createdAt,
+          ...bits,
+        },
+      ]
+    })
+
+  const recentList = (limit: number): RecentEntry[] =>
+    [...recents]
+      .sort((a, b) => (a.viewedAt < b.viewedAt ? 1 : -1))
+      .flatMap((r) => {
+        const bits = pageBitsOf(r.pageId)
+        if (!bits) return []
+        return [
+          {
+            workspaceId: '' as RecentEntry['workspaceId'],
+            userId: ME as RecentEntry['userId'],
+            pageId: r.pageId,
+            viewedAt: r.viewedAt,
+            ...bits,
+          },
+        ]
+      })
+      .slice(0, limit)
+
+  const watchStateOf = (pageId: string): WatchState => {
+    const list = watchers.get(pageId) ?? []
+    return { watching: list.includes(ME), watchers: list as WatchState['watchers'] }
+  }
+
+  const labelsOn = (pageId: string): Label[] =>
+    (pageLabels.get(pageId) ?? []).flatMap((id) => {
+      const found = labels.find((l) => l.id === id)
+      return found ? [found] : []
+    })
 
   /**
    * A copy on the way out, because a real API answers with fresh JSON every time.
@@ -750,7 +897,166 @@ export function createMockQuireApi() {
       purge: async ({ pageId }: { pageId: string }) => {
         const ids = new Set(subtree(pageId).map((r) => r.id))
         for (let i = pages.length - 1; i >= 0; i--) if (ids.has(pages[i]!.id)) pages.splice(i, 1)
+        /*
+         * The favourites, watches and labels of a purged page are deliberately left behind, because
+         * that is what the server does: there is no foreign key, so the rows survive and every read
+         * joins to `pages` — which is why they are invisible rather than broken. Cleaning them up
+         * here would hide the one thing worth noticing about that decision.
+         */
         return { ok: true as const, count: ids.size }
+      },
+
+      setLabels: async ({ pageId, labelIds }: { pageId: string; labelIds: string[] }) => {
+        const row = found(pageId)
+        for (const id of labelIds) {
+          const label = theLabel(id)
+          // A label belongs to a space; putting another space's on a page would leak its vocabulary.
+          if (label.spaceId !== row.spaceId)
+            throw Object.assign(new Error('Every label has to be one this space declares'), {
+              code: 'BAD_REQUEST',
+            })
+        }
+        pageLabels.set(pageId, [...labelIds])
+        return labelsOn(pageId).map((l) => ({ ...l }))
+      },
+    },
+
+    /**
+     * The space's vocabulary. Names clash case-insensitively, as they do in the database — "Draft"
+     * beside "draft" in one picker is broken data rather than two labels — and the capitalisation
+     * somebody typed is what is kept.
+     */
+    labels: {
+      list: async ({ spaceId }: { spaceId: string }) =>
+        labels.filter((l) => l.spaceId === spaceId).map((l) => ({ ...l })),
+
+      forPage: async ({ pageId }: { pageId: string }) => labelsOn(pageId).map((l) => ({ ...l })),
+
+      create: async (input: { spaceId: string; name: string; colour?: LabelColour }) => {
+        const name = input.name.trim()
+        if (!name) throw Object.assign(new Error('A label needs a name'), { code: 'BAD_REQUEST' })
+        if (labels.some((l) => l.spaceId === input.spaceId && l.name.toLowerCase() === name.toLowerCase()))
+          throw Object.assign(new Error(`This space already has a label called "${name}"`), {
+            code: 'CONFLICT',
+          })
+        const made: Label = {
+          id: nextId(),
+          workspaceId: '' as Label['workspaceId'],
+          spaceId: input.spaceId,
+          name,
+          colour: input.colour ?? 'grey',
+          createdAt: new Date().toISOString(),
+        }
+        labels.push(made)
+        return { ...made }
+      },
+
+      update: async (input: { labelId: string; name?: string; colour?: LabelColour }) => {
+        const label = theLabel(input.labelId)
+        if (input.name !== undefined) {
+          const name = input.name.trim()
+          if (!name) throw Object.assign(new Error('A label needs a name'), { code: 'BAD_REQUEST' })
+          if (
+            labels.some(
+              (l) =>
+                l.id !== label.id &&
+                l.spaceId === label.spaceId &&
+                l.name.toLowerCase() === name.toLowerCase(),
+            )
+          )
+            throw Object.assign(new Error(`This space already has a label called "${name}"`), {
+              code: 'CONFLICT',
+            })
+          label.name = name
+        }
+        if (input.colour !== undefined) label.colour = input.colour
+        return { ...label }
+      },
+
+      remove: async ({ labelId }: { labelId: string }) => {
+        const label = theLabel(labelId)
+        labels.splice(labels.indexOf(label), 1)
+        // Off every page that wore it — a label nothing can name is not one anybody can remove.
+        for (const [pageId, ids] of pageLabels)
+          if (ids.includes(labelId))
+            pageLabels.set(
+              pageId,
+              ids.filter((id) => id !== labelId),
+            )
+        return { ok: true as const }
+      },
+    },
+
+    /**
+     * One person's own shortcuts. Every mutation answers with the whole ordered list, because a
+     * fractional-index reorder is only meaningful as an ordering — and because it saves the sidebar
+     * a refetch to redraw itself.
+     */
+    favorites: {
+      list: async () => favoriteList(),
+
+      add: async ({ pageId }: { pageId: string }) => {
+        found(pageId)
+        // Starring the same page twice is the same star, not an error.
+        if (!favorites.some((f) => f.pageId === pageId)) {
+          const last = [...favorites].sort(byPosition).at(-1)?.position ?? null
+          favorites.push({
+            pageId,
+            position: rankBetween(last, null),
+            createdAt: new Date().toISOString(),
+          })
+        }
+        return favoriteList()
+      },
+
+      remove: async ({ pageId }: { pageId: string }) => {
+        const at = favorites.findIndex((f) => f.pageId === pageId)
+        if (at >= 0) favorites.splice(at, 1)
+        return favoriteList()
+      },
+
+      reorder: async ({ pageId, afterId = null }: { pageId: string; afterId?: string | null }) => {
+        const moving = favorites.find((f) => f.pageId === pageId)
+        if (!moving) throw notFound('Favourite')
+        const rest = [...favorites].filter((f) => f.pageId !== pageId).sort(byPosition)
+        const at = afterId ? rest.findIndex((f) => f.pageId === afterId) : -1
+        if (afterId && at < 0)
+          throw Object.assign(new Error('afterId is not one of your favourites'), {
+            code: 'BAD_REQUEST',
+          })
+        moving.position = rankBetween(
+          at >= 0 ? (rest[at]?.position ?? null) : null,
+          rest[at + 1]?.position ?? null,
+        )
+        return favoriteList()
+      },
+    },
+
+    watchers: {
+      get: async ({ pageId }: { pageId: string }) => {
+        found(pageId)
+        return watchStateOf(pageId)
+      },
+
+      set: async ({ pageId, watching = true }: { pageId: string; watching?: boolean }) => {
+        found(pageId)
+        const list = watchers.get(pageId) ?? []
+        const next = watching ? (list.includes(ME) ? list : [...list, ME]) : list.filter((id) => id !== ME)
+        watchers.set(pageId, next)
+        return watchStateOf(pageId)
+      },
+    },
+
+    recents: {
+      list: async ({ limit = 10 }: { limit?: number } = {}) => recentList(limit),
+
+      record: async ({ pageId }: { pageId: string }) => {
+        found(pageId)
+        const existing = recents.find((r) => r.pageId === pageId)
+        // Bumped in place, never appended: this is one row per page, not a visit log.
+        if (existing) existing.viewedAt = new Date().toISOString()
+        else recents.push({ pageId, viewedAt: new Date().toISOString() })
+        return { ok: true as const }
       },
     },
 

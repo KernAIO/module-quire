@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgSchema,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -305,6 +306,140 @@ export const relations = schema.table(
   ],
 )
 
+/**
+ * A word a space puts on pages, so they can be gathered by something other than where they sit.
+ *
+ * Scoped to a space rather than to the workspace: two teams both wanting "Draft" should not have to
+ * agree on what it means, and a label list that spans every space is a list nobody can read.
+ *
+ * The unique index is on `lower(name)`, not on `name`. Case is not a distinction anybody means here
+ * — "Draft" and "draft" next to each other in a picker read as a mistake in the data, and whichever
+ * one a person clicks is a coin toss. Lowercasing in the constraint rather than in the column keeps
+ * the capitalisation somebody chose while refusing the near-duplicate.
+ */
+export const labels = schema.table(
+  'labels',
+  {
+    id: id(),
+    workspaceId: ws(),
+    spaceId: uuid('space_id').notNull(),
+    name: text('name').notNull(),
+    /**
+     * One of the closed set in `LabelColour`, stored as text. The contract is what closes it: the
+     * palette in `client/database/colours.ts` is the only place a name is turned into a colour pair
+     * that has been measured for contrast, and an unknown name falls back to grey rather than
+     * rendering a chip with no background.
+     */
+    colour: text('colour').notNull().default('grey'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('labels_ws_space_name_uq').on(t.workspaceId, t.spaceId, sql`lower(${t.name})`),
+    index('labels_ws_space_idx').on(t.workspaceId, t.spaceId, t.name),
+  ],
+)
+
+/**
+ * A label on a page.
+ *
+ * The primary key is composite and declared in the table's second argument. Two column-level
+ * `.primaryKey()` calls are not a composite key — drizzle emits `PRIMARY KEY` on both columns and
+ * Postgres refuses the table with "multiple primary keys for table are not allowed". Because the
+ * kernel runs a module's migrations at boot, that is not a broken table but a host service that
+ * never binds its port, taking every other module in the process down with it.
+ *
+ * `(page_id, label_id)` leads with the page because reading a page's labels is what happens on every
+ * page load; the second index leads with the label, which is what a "everything tagged X" list asks.
+ */
+export const pageLabels = schema.table(
+  'page_labels',
+  {
+    pageId: uuid('page_id').notNull(),
+    labelId: uuid('label_id').notNull(),
+    workspaceId: ws(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.pageId, t.labelId] }),
+    index('page_labels_ws_label_idx').on(t.workspaceId, t.labelId, t.pageId),
+  ],
+)
+
+/**
+ * A page one person put in their sidebar, and where they put it.
+ *
+ * Per user, not per workspace: a favourite is somebody's own shortcut, so the key is the person and
+ * the page rather than anything shared. `workspace_id` is carried anyway — it is what the row-level
+ * policy reads, and without it a favourite would be the one row in this module not fenced by tenant.
+ *
+ * **`position` is `COLLATE "C"` in the migration and has to stay that way.** It is a fractional
+ * index over a base-62 alphabet ordered by code point, so `ORDER BY position` is only the order the
+ * algorithm intended under byte comparison; this database is `en_US.UTF-8`, where `'U' < 'c'` is
+ * false and a list comes back shuffled. drizzle-kit does not carry collation in its snapshot, so if
+ * this migration is ever regenerated, put it back — that is exactly how `properties.position` and
+ * `views.position` lost theirs.
+ */
+export const favorites = schema.table(
+  'favorites',
+  {
+    workspaceId: ws(),
+    userId: uuid('user_id').notNull(),
+    pageId: uuid('page_id').notNull(),
+    position: text('position').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.pageId] }),
+    index('favorites_ws_user_idx').on(t.workspaceId, t.userId, t.position),
+  ],
+)
+
+/**
+ * The last time one person opened one page.
+ *
+ * One row per person per page, updated in place, rather than one row per visit: a log would grow
+ * without bound to answer a question that only ever wants the most recent handful, and it would need
+ * pruning nobody would remember to run. The write is an upsert on the key that bumps `viewed_at`, so
+ * re-opening a page moves it up the list instead of adding to it.
+ */
+export const recentViews = schema.table(
+  'recent_views',
+  {
+    workspaceId: ws(),
+    userId: uuid('user_id').notNull(),
+    pageId: uuid('page_id').notNull(),
+    viewedAt: ts('viewed_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.pageId] }),
+    index('recent_views_ws_user_idx').on(t.workspaceId, t.userId, t.viewedAt.desc()),
+  ],
+)
+
+/**
+ * Somebody who asked to hear about a page.
+ *
+ * Separate from `favorites` because they are different questions: a favourite is "I want this to
+ * hand", a watch is "tell me when this changes". Collapsing them means either a sidebar full of
+ * pages somebody only wanted notifications about, or a notification for every shortcut they made.
+ *
+ * The index leads with the page rather than the user, because the read that matters happens on
+ * every edit — who has to be told about this — while a person's own list of watches is opened rarely.
+ */
+export const watchers = schema.table(
+  'watchers',
+  {
+    workspaceId: ws(),
+    userId: uuid('user_id').notNull(),
+    pageId: uuid('page_id').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.pageId] }),
+    index('watchers_ws_page_idx').on(t.workspaceId, t.pageId, t.userId),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
 export const TENANT_TABLES = [
   'spaces',
@@ -315,4 +450,9 @@ export const TENANT_TABLES = [
   'properties',
   'views',
   'relations',
+  'labels',
+  'page_labels',
+  'favorites',
+  'recent_views',
+  'watchers',
 ] as const

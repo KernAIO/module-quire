@@ -124,6 +124,42 @@ export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
   'pages.trashPage': { check: 'page', permission: 'quire.page.edit' },
   'pages.restore': { check: 'page', permission: 'quire.page.edit' },
   'pages.purge': { check: 'page', permission: 'quire.page.delete' },
+  'pages.setLabels': { check: 'page', permission: 'quire.page.edit' },
+
+  // A label is the space's vocabulary, not one page's content: renaming "Draft" changes what it
+  // means everywhere it is worn, so writing one is `space.manage` while reading is `space.view`.
+  'labels.list': { check: 'space', permission: 'quire.space.view' },
+  'labels.forPage': { check: 'page', permission: 'quire.page.view' },
+  'labels.create': { check: 'space', permission: 'quire.space.manage' },
+  'labels.update': { check: 'space', permission: 'quire.space.manage' },
+  'labels.remove': { check: 'space', permission: 'quire.space.manage' },
+
+  /*
+   * Favourites, watches and recent views are one person's own, and that is a *filter inside the
+   * query*, not a permission — RLS fences the workspace, which is the tenant boundary rather than a
+   * privacy one, so `user_id` in each query is what keeps a sidebar personal.
+   *
+   * What the permission still decides is which pages may enter that list at all. Anything naming a
+   * page checks the page: you have to be able to read a page to bookmark it, to watch it, or to
+   * record having opened it — otherwise a page a space has closed to you is one you can still put
+   * in your own sidebar and be told about.
+   *
+   * The three that name no page are `workspace`, honestly: "my whole list" has no narrower scope to
+   * resolve. Each still drops the entries whose pages the caller may no longer read, and taking
+   * your own bookmark back is deliberately not gated on the page — a shortcut you can no longer
+   * open is exactly the one you want to be rid of, and needing read access to delete it would
+   * strand it there for good.
+   */
+  'favorites.list': { check: 'workspace', permission: 'quire.page.view' },
+  'favorites.add': { check: 'page', permission: 'quire.page.view' },
+  'favorites.remove': { check: 'workspace', permission: 'quire.page.view' },
+  'favorites.reorder': { check: 'workspace', permission: 'quire.page.view' },
+
+  'watchers.get': { check: 'page', permission: 'quire.page.view' },
+  'watchers.set': { check: 'page', permission: 'quire.page.view' },
+
+  'recents.list': { check: 'workspace', permission: 'quire.page.view' },
+  'recents.record': { check: 'page', permission: 'quire.page.view' },
 
   'versions.list': { check: 'page', permission: 'quire.page.view' },
   'versions.get': { check: 'page', permission: 'quire.page.view' },

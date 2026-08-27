@@ -14,11 +14,15 @@ import {
   relativeTime,
   Skeleton,
   session,
+  toast,
 } from '@kernhq/ui'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getQuireApi } from '../api-instance.js'
 import CommentsPanel from '../components/CommentsPanel.svelte'
+import ConfirmDialog from '../components/ConfirmDialog.svelte'
+import FavoriteStar from '../components/FavoriteStar.svelte'
 import PageEditor from '../components/PageEditor.svelte'
+import PageLabels from '../components/PageLabels.svelte'
 import VersionHistory from '../components/VersionHistory.svelte'
 import { type CoreApi, toPerson } from '../core-api.js'
 import DatabaseView from '../database/DatabaseView.svelte'
@@ -191,11 +195,174 @@ async function revert() {
   }
 }
 
+// -----------------------------------------------------------------------------------------------
+// Watching, recording, and the way this page is deleted
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * Whether you are watching, and how many others are.
+ *
+ * One request, because the control has to draw both — its own pressed state and the number beside
+ * it — and asking twice within a keystroke of each other is two requests for one button. The reply
+ * to `set` is the same shape, so it goes straight into the cache and nothing refetches.
+ */
+const watchQuery = createQuery(() => ({
+  queryKey: quireKeys.watchers(workspaceId, pageId),
+  enabled: Boolean(workspaceId && pageId),
+  queryFn: () => api.watchers.get({ workspaceId, pageId }),
+}))
+const watching = $derived(watchQuery.data?.watching ?? false)
+const watcherCount = $derived(watchQuery.data?.watchers.length ?? 0)
+let watchBusy = $state(false)
+
+async function toggleWatch() {
+  if (watchBusy) return
+  watchBusy = true
+  try {
+    const next = await api.watchers.set({ workspaceId, pageId, watching: !watching })
+    client.setQueryData(quireKeys.watchers(workspaceId, pageId), next)
+    toast.success(next.watching ? t('watch_on') : t('watch_off'))
+  } finally {
+    watchBusy = false
+  }
+}
+
+/**
+ * Opening a page is what puts it in "Recent".
+ *
+ * A bump, not a log: one row per person per page, so the table is bounded by pages times people
+ * rather than growing for ever to answer a question that only ever wants the most recent handful.
+ * Failure is swallowed on purpose — a page you cannot record having read is still a page you are
+ * reading, and an error toast about a sidebar list would be noise over the thing you came for.
+ */
+$effect(() => {
+  const ws = workspaceId
+  const id = pageId
+  if (!ws || !id) return
+  void api.recents
+    .record({ workspaceId: ws, pageId: id })
+    .then(() => client.invalidateQueries({ queryKey: quireKeys.recents(ws) }))
+    .catch(() => {})
+})
+
+/**
+ * How many pages "Move to trash" is about to take.
+ *
+ * It takes the whole subtree, and it used to fire with no confirmation and no way back: deleting
+ * "Working here" silently took "Your first week" and "Time off" with it. So the count is worked out
+ * *before* the dialog says anything, from the space's tree — loaded only when the dialog opens,
+ * because a page nobody is deleting should not pay for a second copy of the tree.
+ *
+ * `includeArchived: true`, under a key of its own: the sidebar holds the same call with archived
+ * pages left out, and reusing that key would either hand this the wrong list or replace the
+ * sidebar's. Archived descendants go to the trash like any other, so a count that skipped them
+ * would be the same lie in a smaller size.
+ *
+ * A database page's rows are not counted. They are pages, and `trashPage` takes them — but they are
+ * rows to the person reading, and "and 340 pages inside it" for a table of 340 rows would read as a
+ * different disaster from the one about to happen. The toast afterwards reports the number the
+ * server actually took.
+ */
+let trashConfirm = $state(false)
+
+const subtreeQuery = createQuery(() => ({
+  queryKey: [...quireKeys.tree(workspaceId, doc?.spaceId ?? ''), 'with-archived'],
+  enabled: trashConfirm && Boolean(workspaceId && doc?.spaceId),
+  queryFn: () => api.pages.tree({ workspaceId, spaceId: doc?.spaceId ?? '', includeArchived: true }),
+}))
+
+/**
+ * `isFetching`, not just `data`, because a cached tree is not a current one.
+ *
+ * TanStack hands a query its cached value the instant it is enabled and refetches behind it, so
+ * `data === undefined` only catches the *first* open. Every later one renders whatever the last
+ * fetch left, and the last fetch is routinely wrong: `refreshAfterMoving` runs while the dialog is
+ * still open, so it reloads the tree with the subtree already in the trash and caches a tree
+ * without it. Trash a page, press **Undo**, reach for **Move to trash** again, and the dialog said
+ * "It goes to the trash, and you can put it back from there" — the singular sentence, for a page
+ * that takes two others with it. Measured; the whole point of this dialog is that number, so a
+ * stale one is worse than none.
+ */
+const trashCount = $derived.by((): number | null => {
+  const nodes = subtreeQuery.data
+  if (!nodes || subtreeQuery.isFetching) return null
+  const children = new Map<string, string[]>()
+  for (const node of nodes)
+    if (node.parentId) children.set(node.parentId, [...(children.get(node.parentId) ?? []), node.id])
+  let total = 1
+  let guard = 0
+  const stack = [pageId]
+  while (stack.length > 0 && guard++ < 5000) {
+    const id = stack.pop() as string
+    for (const child of children.get(id) ?? []) {
+      total++
+      stack.push(child)
+    }
+  }
+  return total
+})
+
+/**
+ * Move it, then offer to take it back.
+ *
+ * The undo is the point. A confirmation stops the deletion you did not mean to start; it does
+ * nothing for the one you meant and regretted, and `pages.restore` puts the whole subtree back —
+ * so the toast carries the action rather than leaving the trash screen as the only way home. It
+ * outlives this component: the shell owns the toaster, so navigating away does not cancel it.
+ */
+/**
+ * Everything a page leaving or rejoining the space changes.
+ *
+ * The favourites and recents lists are the ones easy to forget, and forgetting them is visible:
+ * both are composed by joining to `pages`, so a trashed page silently drops out of them — and a
+ * sidebar still offering a shortcut to a page that is in the trash is exactly the kind of thing
+ * that makes somebody distrust the sidebar. Nothing else will do it either, because a `page`
+ * change invalidates the `page` prefix and these two live under their own.
+ */
+async function refreshAfterMoving(spaceId: string) {
+  await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, spaceId) })
+  await client.invalidateQueries({ queryKey: quireKeys.trash(workspaceId, spaceId) })
+  await client.invalidateQueries({ queryKey: quireKeys.favorites(workspaceId) })
+  await client.invalidateQueries({ queryKey: quireKeys.recents(workspaceId) })
+}
+
 async function trash() {
-  if (!doc) return
-  await api.pages.trashPage({ workspaceId, pageId })
-  await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, doc.spaceId) })
+  const page = doc
+  if (!page) return
+  const spaceId = page.spaceId
+  const title = page.title.trim() || t('untitled')
+  const answer = await api.pages.trashPage({ workspaceId, pageId })
+  await refreshAfterMoving(spaceId)
+  toast(t('trash_moved', { count: answer.count }), {
+    // Long enough to read the sentence, notice the number and decide — the default 2.2s is a
+    // confirmation, and this is an offer.
+    duration: 9000,
+    action: {
+      label: t('undo'),
+      onClick: () => void undoTrash(workspaceId, pageId, spaceId, title),
+    },
+  })
   void navigation.go(`/${workspaceSlug}/quire/${encodeURIComponent(spaceKey)}`)
+}
+
+/**
+ * `workspace` is passed in rather than read from the closure.
+ *
+ * This runs from a toast that outlives the component — the screen has already navigated away by
+ * the time anybody presses **Undo** — so every value it needs is a plain argument. Reaching for
+ * `workspaceId` here would be reading a `$derived` belonging to a component that no longer exists.
+ */
+async function undoTrash(workspace: string, id: string, spaceId: string, title: string) {
+  try {
+    await api.pages.restore({ workspaceId: workspace, pageId: id })
+    await client.invalidateQueries({ queryKey: quireKeys.tree(workspace, spaceId) })
+    await client.invalidateQueries({ queryKey: quireKeys.trash(workspace, spaceId) })
+    await client.invalidateQueries({ queryKey: quireKeys.favorites(workspace) })
+    await client.invalidateQueries({ queryKey: quireKeys.recents(workspace) })
+    toast.success(t('trash_restore_done', { title }))
+  } catch {
+    toast.error(t('trash_undo_failed'))
+  }
 }
 </script>
 
@@ -249,6 +416,13 @@ async function trash() {
         {/if}
       </h1>
 
+      <!--
+        The star sits beside the title rather than in the menu: "keep this to hand" is a thing
+        people do while reading, and a two-state control buried behind an ellipsis cannot show its
+        state at all.
+      -->
+      <FavoriteStar {workspaceId} pageId={doc.id} />
+
       <DropdownMenu
         items={[
           {
@@ -278,19 +452,38 @@ async function trash() {
               ]
             : []),
           {
+            id: 'watch',
+            label: watching ? t('watch_stop') : t('watch'),
+            icon: watching ? 'bell-off' : 'bell',
+            hint: watcherCount > 0 ? t('watchers', { count: watcherCount }) : undefined,
+            onSelect: () => void toggleWatch(),
+          },
+          {
             id: 'archive',
             label: doc.archivedAt ? t('unarchive') : t('archive'),
             icon: 'archive',
             disabled: !editable,
             onSelect: () => void archive(!doc.archivedAt),
           },
+          { type: 'separator' },
           {
             id: 'trash',
             label: t('move_to_trash'),
             icon: 'trash-2',
             danger: true,
             disabled: !editable,
-            onSelect: () => void trash(),
+            // Asks first, and says how many pages it is about to take with it.
+            onSelect: () => (trashConfirm = true),
+          },
+          {
+            id: 'open-trash',
+            label: t('trash_open'),
+            icon: 'rotate-ccw',
+            disabled: !editable,
+            onSelect: () =>
+              void navigation.go(
+                `/${workspaceSlug}/quire/${encodeURIComponent(spaceKey)}/trash`,
+              ),
           },
         ]}
       >
@@ -327,7 +520,22 @@ async function trash() {
       {#if peers.length > 0}
         <span class="chip">{t('people_here', { count: peers.length })}</span>
       {/if}
+      {#if watching}
+        <span class="chip"><Icon name="bell" size={12} /> {t('watchers', { count: watcherCount })}</span>
+      {/if}
     </div>
+
+    <!--
+      Under the byline, above the prose: a label is about the page as a whole, so it belongs with
+      the things that say what this page *is* rather than inside what it says.
+    -->
+    <PageLabels
+      {workspaceId}
+      spaceId={doc.spaceId}
+      pageId={doc.id}
+      canEdit={editable}
+      canManage={canQuire('spaceManage')}
+    />
 
     {#if doc.kind === 'page' && doc.hasUnpublishedChanges}
       <div class="banner" role="status">
@@ -380,6 +588,21 @@ async function trash() {
     {workspaceId}
     {pageId}
     publishedVersionId={doc.publishedVersionId}
+  />
+
+  <!--
+    The body says nothing about numbers until it knows them. Naming a count before the tree has
+    loaded would be the same silent lie in a smaller size — "it goes to the trash" for a page that
+    is about to take two others with it.
+  -->
+  <ConfirmDialog
+    bind:open={trashConfirm}
+    title={t('trash_confirm_title', { title: doc.title.trim() || t('untitled') })}
+    body={trashCount === null ? t('loading') : t('trash_confirm_body', { count: trashCount })}
+    confirmLabel={t('move_to_trash')}
+    danger
+    pending={trashCount === null}
+    onConfirm={trash}
   />
 {/if}
 

@@ -14,6 +14,30 @@ export const quireKeys = {
   page: (workspaceId: string, pageId: string) => ['quire', 'page', workspaceId, pageId] as const,
   trash: (workspaceId: string, spaceId: string) => ['quire', 'page', workspaceId, 'trash', spaceId] as const,
 
+  /**
+   * A space's vocabulary, and what one page wears out of it.
+   *
+   * `label` is the entity the server announces when one is created, renamed or removed, so a
+   * rename reaches every chip drawing that label without anybody wiring an invalidation. Putting
+   * labels *on* a page announces `page` instead — that is a change to the page — so
+   * `pages.setLabels` invalidates this key itself.
+   */
+  labels: (workspaceId: string, spaceId: string) => ['quire', 'label', workspaceId, spaceId] as const,
+  pageLabels: (workspaceId: string, pageId: string) =>
+    ['quire', 'label', workspaceId, 'page', pageId] as const,
+
+  /**
+   * The three personal lists.
+   *
+   * Nothing on the server announces a change for these, and nothing should: one person starring a
+   * page is not news to anybody else's open tab, and a `change` is broadcast to the whole
+   * workspace. Their entities are therefore cache names rather than realtime names — the mutations
+   * that write them answer with the whole list, so a screen redraws from the reply.
+   */
+  favorites: (workspaceId: string) => ['quire', 'favorite', workspaceId] as const,
+  recents: (workspaceId: string) => ['quire', 'recent', workspaceId] as const,
+  watchers: (workspaceId: string, pageId: string) => ['quire', 'watcher', workspaceId, pageId] as const,
+
   /** the schema — properties and views — which every open tab of a database is drawing */
   database: (workspaceId: string, databaseId: string) =>
     ['quire', 'database', workspaceId, databaseId] as const,

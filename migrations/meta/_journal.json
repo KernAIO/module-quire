@@ -50,6 +50,13 @@
       "when": 1787748000000,
       "tag": "0006_rank_collation",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787855855860,
+      "tag": "0007_organisation",
+      "breakpoints": true
     }
   ]
 }

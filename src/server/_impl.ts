@@ -65,6 +65,21 @@ export function implement_(kernel: Kernel) {
     return scope
   }
 
+  /**
+   * The caller as a person, for the procedures that only make sense as one.
+   *
+   * `principal.userId` is null for a service principal, and a favourite, a watch and a recent view
+   * all belong to somebody: a service is a caller with no sidebar, not one whose sidebar is empty.
+   * The two shortcuts around this both end badly — `?? ''` fails the insert on a uuid column, and a
+   * nil-uuid sentinel silently pools every service that ever calls into one shared person's list,
+   * which is a privacy bug wearing a default value. So it refuses instead.
+   */
+  const asPerson = (context: RequestContext): string => {
+    const userId = context.principal.userId
+    if (!userId) throw new KernError('FORBIDDEN', 'These belong to a person, and this caller is a service')
+    return userId
+  }
+
   /** Both, every time: the event for anything that reacts later, the change for a screen open now. */
   const announce = (
     workspaceId: string,
@@ -175,7 +190,14 @@ export function implement_(kernel: Kernel) {
             input.workspaceId,
             input.spaceId,
           )
-          return svc.pages.trash(tx, input.workspaceId, input.spaceId, input.limit, input.cursor ?? null)
+          return svc.pages.trash(
+            tx,
+            context.principal,
+            input.workspaceId,
+            input.spaceId,
+            input.limit,
+            input.cursor ?? null,
+          )
         }),
       ),
 
@@ -334,6 +356,26 @@ export function implement_(kernel: Kernel) {
         for (const id of ids) await announce(input.workspaceId, 'page', id, 'deleted', { spaceId })
         return { ok: true as const, count: ids.length }
       }),
+
+      setLabels: scoped.pages.setLabels
+        .use(requires('quire.page.edit'))
+        .handler(async ({ input, context }) => {
+          const { labels, spaceId } = await run(context, input.workspaceId, async (tx) => {
+            const scope = await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.edit')
+            return {
+              labels: await svc.organisation.setLabels(
+                tx,
+                input.workspaceId,
+                input.pageId,
+                scope.spaceId,
+                input.labelIds,
+              ),
+              spaceId: scope.spaceId,
+            }
+          })
+          await announce(input.workspaceId, 'page', input.pageId, 'updated', { spaceId })
+          return labels
+        }),
     },
 
     versions: {
@@ -739,6 +781,179 @@ export function implement_(kernel: Kernel) {
           await announce(input.workspaceId, 'row', input.rowId, 'updated')
           return { ok: true as const }
         }),
+    },
+
+    labels: {
+      list: scoped.labels.list.use(requires('quire.space.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.space.view',
+            input.workspaceId,
+            input.spaceId,
+          )
+          return svc.organisation.listLabels(tx, input.workspaceId, input.spaceId)
+        }),
+      ),
+
+      forPage: scoped.labels.forPage.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
+          return svc.organisation.labelsForPage(tx, input.workspaceId, input.pageId)
+        }),
+      ),
+
+      create: scoped.labels.create.use(requires('quire.space.manage')).handler(async ({ input, context }) => {
+        const label = await run(context, input.workspaceId, async (tx) => {
+          await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.space.manage',
+            input.workspaceId,
+            input.spaceId,
+          )
+          return svc.organisation.createLabel(tx, input.workspaceId, input.spaceId, input)
+        })
+        await announce(input.workspaceId, 'label', label.id, 'created', { spaceId: input.spaceId })
+        return label
+      }),
+
+      /**
+       * A label id carries no scope of its own, so the row is read first and the space it belongs to
+       * is what the permission question is asked about — the same shape as a `databases.*` procedure
+       * resolving its host page, and for the same reason: eight of those asked nothing at all.
+       */
+      update: scoped.labels.update.use(requires('quire.space.manage')).handler(async ({ input, context }) => {
+        const label = await run(context, input.workspaceId, async (tx) => {
+          const existing = await svc.organisation.labelRow(tx, input.workspaceId, input.labelId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.space.manage',
+            input.workspaceId,
+            existing.spaceId,
+          )
+          return svc.organisation.updateLabel(tx, input.workspaceId, input.labelId, input)
+        })
+        await announce(input.workspaceId, 'label', label.id, 'updated', { spaceId: label.spaceId })
+        return label
+      }),
+
+      remove: scoped.labels.remove.use(requires('quire.space.manage')).handler(async ({ input, context }) => {
+        const spaceId = await run(context, input.workspaceId, async (tx) => {
+          const existing = await svc.organisation.labelRow(tx, input.workspaceId, input.labelId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.space.manage',
+            input.workspaceId,
+            existing.spaceId,
+          )
+          await svc.organisation.removeLabel(tx, input.workspaceId, input.labelId)
+          return existing.spaceId
+        })
+        await announce(input.workspaceId, 'label', input.labelId, 'deleted', { spaceId })
+        return { ok: true as const }
+      }),
+    },
+
+    /**
+     * Favourites, watches and recents are one person's own, so every one of these takes the caller's
+     * id from the principal rather than from the input — an input a client fills in is an input a
+     * client can fill in with somebody else's id.
+     *
+     * Nothing here announces a realtime change. A `change` is broadcast to the whole workspace, and
+     * one person starring a page is not news to anybody else's open tab — announcing it would wake
+     * every session in the workspace to redraw a sidebar that has not moved. The one thing here that
+     * *is* shared, the watcher list, is read when the page is opened.
+     */
+    favorites: {
+      list: scoped.favorites.list
+        .use(requires('quire.page.view'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, (tx) =>
+            svc.organisation.listFavorites(tx, context.principal, input.workspaceId, asPerson(context)),
+          ),
+        ),
+
+      add: scoped.favorites.add.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          // You have to be able to read a page to put it in your own sidebar.
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
+          await svc.organisation.addFavorite(tx, input.workspaceId, asPerson(context), input.pageId)
+          return svc.organisation.listFavorites(tx, context.principal, input.workspaceId, asPerson(context))
+        }),
+      ),
+
+      /**
+       * Deliberately not page-checked. A shortcut to a page you may no longer open is precisely the
+       * one you want to be rid of, and gating its removal on reading the page would strand it in
+       * the sidebar for good.
+       */
+      remove: scoped.favorites.remove.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.organisation.removeFavorite(tx, input.workspaceId, asPerson(context), input.pageId)
+          return svc.organisation.listFavorites(tx, context.principal, input.workspaceId, asPerson(context))
+        }),
+      ),
+
+      reorder: scoped.favorites.reorder.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.organisation.reorderFavorite(
+            tx,
+            input.workspaceId,
+            asPerson(context),
+            input.pageId,
+            input.afterId,
+          )
+          return svc.organisation.listFavorites(tx, context.principal, input.workspaceId, asPerson(context))
+        }),
+      ),
+    },
+
+    watchers: {
+      get: scoped.watchers.get.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
+          return svc.organisation.watchState(tx, input.workspaceId, input.pageId, asPerson(context))
+        }),
+      ),
+
+      set: scoped.watchers.set.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
+          return svc.organisation.setWatching(
+            tx,
+            input.workspaceId,
+            input.pageId,
+            asPerson(context),
+            input.watching,
+          )
+        }),
+      ),
+    },
+
+    recents: {
+      list: scoped.recents.list
+        .use(requires('quire.page.view'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, (tx) =>
+            svc.organisation.listRecents(
+              tx,
+              context.principal,
+              input.workspaceId,
+              asPerson(context),
+              input.limit,
+            ),
+          ),
+        ),
+
+      record: scoped.recents.record.use(requires('quire.page.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
+          await svc.organisation.recordRecent(tx, input.workspaceId, asPerson(context), input.pageId)
+          return { ok: true as const }
+        }),
+      ),
     },
 
     publishing: {

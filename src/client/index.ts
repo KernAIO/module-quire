@@ -27,15 +27,23 @@ export {
   type Comment,
   type CommentAnchor,
   type CommentThread,
+  type Favorite,
+  type FavoriteEntry,
+  type Label,
+  type LabelColour,
   MODULE_ID,
   type Page,
   type PageKind,
   type PageNode,
   type PageVersion,
   quirePermissions,
+  type RecentEntry,
+  type RecentView,
   type Space,
   type SpaceVisibility,
   type VersionKind,
+  type Watcher,
+  type WatchState,
 } from '../contract/index.js'
 export type { CoreMember, Person } from './core-api.js'
 export { OPTION_COLOURS, toneFor } from './database/colours.js'

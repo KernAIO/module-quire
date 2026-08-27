@@ -70,6 +70,59 @@ export function quirePages(access: QuireAccess) {
     return rankBetween(ordered[at]!.position, ordered[at + 1]?.position ?? null)
   }
 
+  /**
+   * Keep only the rows of one space whose page this person may still read.
+   *
+   * The ancestor chains are built from one flat read of the space rather than from `scopeOf` per
+   * row: `scopeOf` is a recursive query each time, and a listing is exactly where that turns one
+   * screen into a round trip per page. Every ancestor of a page is in the same space by
+   * construction — `create` and `move` both refuse a parent from another one — so the flat read
+   * has the whole chain.
+   *
+   * The permission check is still one call per row, because the engine answers about one scope at
+   * a time. That is the same cost `favorites.list` pays, and the listing is bounded by its page
+   * size.
+   */
+  async function readableInSpace<T extends { id: string }>(
+    tx: Tx,
+    principal: Principal,
+    workspaceId: string,
+    spaceId: string,
+    rows: T[],
+  ): Promise<T[]> {
+    if (rows.length === 0) return rows
+    const all = await tx
+      .select({ id: pages.id, parentId: pages.parentId })
+      .from(pages)
+      .where(and(eq(pages.workspaceId, workspaceId), eq(pages.spaceId, spaceId)))
+    const parentOf = new Map(all.map((row) => [row.id, row.parentId]))
+    /** Nearest ancestor first, and `seen` is what stops a cycle from hanging the request. */
+    const ancestorsOf = (id: string): string[] => {
+      const chain: string[] = []
+      const seen = new Set([id])
+      let at = parentOf.get(id) ?? null
+      while (at !== null && !seen.has(at)) {
+        chain.push(at)
+        seen.add(at)
+        at = parentOf.get(at) ?? null
+      }
+      return chain
+    }
+    const kept: Array<T | null> = await Promise.all(
+      rows.map(
+        async (row): Promise<T | null> =>
+          (await access.canPage(principal, 'quire.page.view', workspaceId, {
+            pageId: row.id,
+            spaceId,
+            ancestorIds: ancestorsOf(row.id),
+          }))
+            ? row
+            : null,
+      ),
+    )
+    return kept.filter((row): row is T => row !== null)
+  }
+
   return {
     /**
      * Every page in the space, flat, ordered so the caller can build the tree without sorting.
@@ -126,7 +179,29 @@ export function quirePages(access: QuireAccess) {
       return toPage(await access.pageRow(tx, workspaceId, pageId))
     },
 
-    async trash(tx: Tx, workspaceId: string, spaceId: string, limit: number, cursor: string | null) {
+    /**
+     * What is in the space's trash, filtered to what this person may actually read.
+     *
+     * The procedure is space-scoped — you reach the screen by being allowed to edit *somewhere* in
+     * the space — so without a second, narrower question every row here is a title handed to
+     * whoever can open the screen, including the pages a page-scoped DENY closed to them. That is
+     * a real leak rather than a tidiness point: `pages.get`, `pages.restore` and `pages.purge` are
+     * all page-scoped, so an unfiltered row names a page its reader can neither open, put back nor
+     * delete. It exists only to say what it was called.
+     *
+     * The check is `quire.page.view`, the permission that governs seeing a title, and it is asked
+     * per page rather than per space — the same rule `favorites.list` and `recents.list` follow.
+     * The cursor is taken from the window *before* filtering, so removing a row cannot make the
+     * next page skip one.
+     */
+    async trash(
+      tx: Tx,
+      principal: Principal,
+      workspaceId: string,
+      spaceId: string,
+      limit: number,
+      cursor: string | null,
+    ) {
       const rows = await tx
         .select()
         .from(pages)
@@ -140,8 +215,10 @@ export function quirePages(access: QuireAccess) {
         )
         .orderBy(desc(pages.id))
         .limit(limit + 1)
-      const items = rows.slice(0, limit).map(toPage)
-      return { items, nextCursor: rows.length > limit ? (items.at(-1)?.id ?? null) : null }
+      const window = rows.slice(0, limit)
+      const nextCursor = rows.length > limit ? (window.at(-1)?.id ?? null) : null
+      const readable = await readableInSpace(tx, principal, workspaceId, spaceId, window)
+      return { items: readable.map(toPage), nextCursor }
     },
 
     async create(

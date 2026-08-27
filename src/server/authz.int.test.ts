@@ -146,6 +146,10 @@ const fixture = {
   viewId: '',
   spareViewId: '',
   rowId: '',
+  labelId: '',
+  // One each, for the same reason there are three comments: a procedure that wrongly succeeds must
+  // not be able to make the next one fail with NOT_FOUND, which is not the refusal being asserted.
+  labelToRemove: '',
 }
 
 beforeAll(async () => {
@@ -261,6 +265,11 @@ beforeAll(async () => {
     return created
   })
   fixture.rowId = row.id
+
+  const label = (name: string) =>
+    run((tx) => svc.organisation.createLabel(tx, WS, space.id, { name, colour: 'accent' }))
+  fixture.labelId = (await label('Draft')).id
+  fixture.labelToRemove = (await label('Archive')).id
 }, 180_000)
 
 afterAll(async () => {
@@ -292,6 +301,24 @@ const inputFor = (): Record<string, Record<string, unknown>> => {
     'pages.trashPage': page,
     'pages.restore': page,
     'pages.purge': page,
+    'pages.setLabels': { ...page, labelIds: [fixture.labelId] },
+
+    'labels.list': space,
+    'labels.forPage': page,
+    'labels.create': { ...space, name: 'Smuggled label' },
+    'labels.update': { ...ws, labelId: fixture.labelId, name: 'Renamed label' },
+    'labels.remove': { ...ws, labelId: fixture.labelToRemove },
+
+    'favorites.list': ws,
+    'favorites.add': { ...page },
+    'favorites.remove': { ...page },
+    'favorites.reorder': { ...page, afterId: null },
+
+    'watchers.get': page,
+    'watchers.set': { ...page, watching: true },
+
+    'recents.list': ws,
+    'recents.record': page,
 
     'versions.list': page,
     'versions.get': { ...ws, versionId: fixture.versionId },
@@ -486,5 +513,59 @@ describe('every procedure in the contract', () => {
     expect(declared.length, 'the map went empty, which would make every loop above vacuous').toBeGreaterThan(
       Object.keys(quireContract).length,
     )
+  })
+})
+
+/*
+ * Both passes above ask whether a procedure *refuses*. A listing has a third answer available to
+ * it — succeed, and name something in the result the caller may not read — and neither pass can
+ * see it, because a listing that returns a row is a listing that returned.
+ *
+ * `pages.trash` is the one that mattered. It is scoped to the space, so reaching the screen only
+ * takes an edit permission somewhere in it, and every trashed title came back to whoever got that
+ * far. The page-scoped DENY is exactly the case the model exists for, and the row it produced was
+ * inert as well as private: `pages.get`, `pages.restore` and `pages.purge` all refuse it.
+ */
+describe('the trash listing, against a page-scoped DENY', () => {
+  it('does not name a page this person may not read', async () => {
+    const who = principal(SWEEP, 'admin')
+    const title = 'Redundancy plan Q4'
+    const doomed = await run((tx) =>
+      svc.pages.create(tx, owner(), WS, {
+        spaceId: fixture.spaceId,
+        parentId: null,
+        title,
+        kind: 'page',
+        icon: null,
+        afterId: null,
+      }),
+    )
+    await run((tx) => svc.pages.trashPage(tx, WS, doomed.id))
+
+    const space = { workspaceId: WS, spaceId: fixture.spaceId }
+    type Listing = { items: Array<{ title: string }> }
+
+    // Listed when nothing is denied, so the assertion below cannot pass for want of a fixture.
+    const open = (await invoke('pages.trash', space, who)) as Listing
+    expect(
+      open.items.map((p) => p.title),
+      'the fixture never reached the trash, so the DENY below would prove nothing',
+    ).toContain(title)
+
+    denyOnPages(SWEEP, ['quire.page.view'], [doomed.id])
+    const closed = (await invoke('pages.trash', space, who)) as Listing
+    const opened = await invoke('pages.get', { workspaceId: WS, pageId: doomed.id }, who).then(
+      () => 'succeeded',
+      (err) => codeOf(err),
+    )
+    bindings.clear()
+
+    expect(opened, 'pages.get let the DENY through, so this is not the case it claims to be').toBe(
+      'FORBIDDEN',
+    )
+    expect(
+      closed.items.map((p) => p.title),
+      'the trash screen showed the title of a page a page-scoped DENY closed to this reader',
+    ).not.toContain(title)
   })
 })

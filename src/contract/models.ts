@@ -161,4 +161,87 @@ export const CommentThread = z.object({
 })
 export type CommentThread = z.infer<typeof CommentThread>
 
+/**
+ * The colours a label may wear, closed on purpose.
+ *
+ * `SelectOption.colour` next door is free text, and the comment on `client/database/colours.ts`
+ * explains what that costs: one typo renders a chip with no background, and — worse — a colour pair
+ * nobody has measured for contrast. These are exactly the keys of `TONES`, so every one of them is a
+ * pair the design tokens already tuned for light and dark. A label is picked from a menu rather than
+ * typed, so there is no reason to leave the door open here.
+ */
+export const LabelColour = z.enum([
+  'grey',
+  'slate',
+  'accent',
+  'success',
+  'warning',
+  'danger',
+  'info',
+  'purple',
+])
+export type LabelColour = z.infer<typeof LabelColour>
+
+/**
+ * A word a space puts on pages, so they can be gathered by something other than where they sit.
+ *
+ * Scoped to a space, not to the workspace: two teams both wanting "Draft" should not have to agree
+ * on what it means, and a label list spanning every space is a list nobody can read. Names are
+ * unique per space case-insensitively — "Draft" and "draft" in one picker are broken data.
+ */
+export const Label = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  spaceId: Id,
+  name: z.string().min(1).max(60),
+  colour: LabelColour,
+  createdAt: Timestamp,
+})
+export type Label = z.infer<typeof Label>
+
+/**
+ * A page somebody put in their own sidebar, and where they put it.
+ *
+ * `position` is a fractional index, not an integer, for the same reason `Page.position` is: dragging
+ * one favourite between two others must not renumber the rest, or two reorders at once write
+ * different numbers for the same rows.
+ */
+export const Favorite = z.object({
+  workspaceId: WorkspaceId,
+  userId: UserId,
+  pageId: Id,
+  position: z.string().min(1).max(256),
+  createdAt: Timestamp,
+})
+export type Favorite = z.infer<typeof Favorite>
+
+/**
+ * The last time somebody opened a page.
+ *
+ * One row per person per page, bumped in place — not a visit log. A log grows without bound to
+ * answer a question that only ever wants the most recent handful, and needs pruning nobody runs.
+ */
+export const RecentView = z.object({
+  workspaceId: WorkspaceId,
+  userId: UserId,
+  pageId: Id,
+  viewedAt: Timestamp,
+})
+export type RecentView = z.infer<typeof RecentView>
+
+/**
+ * Somebody who asked to hear about a page.
+ *
+ * Deliberately not the same thing as a favourite: "I want this to hand" and "tell me when this
+ * changes" are different requests, and collapsing them gives you either a sidebar full of pages
+ * somebody only wanted news about or a notification for every shortcut they made.
+ */
+export const Watcher = z.object({
+  workspaceId: WorkspaceId,
+  userId: UserId,
+  pageId: Id,
+  createdAt: Timestamp,
+})
+export type Watcher = z.infer<typeof Watcher>
+
 export const Ok = z.object({ ok: z.literal(true) })

@@ -1,13 +1,17 @@
-import { baseContract, Id, PageInput, page, WorkspaceId } from '@kernhq/contracts'
+import { baseContract, Id, PageInput, page, UserId, WorkspaceId } from '@kernhq/contracts'
 import { z } from 'zod'
 import {
   CommentAnchor,
   CommentThread,
+  Favorite,
+  Label,
+  LabelColour,
   Ok,
   Page,
   PageKind,
   PageNode,
   PageVersion,
+  RecentView,
   RichDoc,
   Space,
   SpaceVisibility,
@@ -27,6 +31,41 @@ import {
 
 const ws = z.object({ workspaceId: WorkspaceId })
 const t = (...tags: string[]) => ({ tags })
+
+/** The page fields a shortcut row draws, so a sidebar is one request rather than one per entry. */
+const pageBits = {
+  spaceId: Id,
+  title: z.string(),
+  icon: z.string().nullable(),
+  kind: PageKind,
+}
+
+/**
+ * A favourite as a sidebar draws it: the shortcut, plus enough of its page to render the row.
+ *
+ * Composed here rather than stored, for the same reason `versions.get` composes its output here —
+ * it is the shape of one answer, not a second copy of the page. A favourite whose page has been
+ * trashed or purged is not in this list at all: the row survives (nothing cascades), and every read
+ * joins to `pages`, so it is simply never drawn.
+ */
+export const FavoriteEntry = Favorite.extend(pageBits)
+export type FavoriteEntry = z.infer<typeof FavoriteEntry>
+
+/** The same, for a page somebody opened recently. */
+export const RecentEntry = RecentView.extend(pageBits)
+export type RecentEntry = z.infer<typeof RecentEntry>
+
+/**
+ * Whether you are watching a page, and who else is.
+ *
+ * Both in one answer because a watch button has to draw both — its own pressed state and the number
+ * beside it — and asking twice within a keystroke of each other is two requests for one control.
+ */
+export const WatchState = z.object({
+  watching: z.boolean(),
+  watchers: z.array(UserId),
+})
+export type WatchState = z.infer<typeof WatchState>
 
 export const quireContract = {
   spaces: {
@@ -137,6 +176,19 @@ export const quireContract = {
       .route({ method: 'DELETE', path: '/pages/{pageId}', ...t('pages') })
       .input(ws.extend({ pageId: Id }))
       .output(z.object({ ok: z.literal(true), count: z.number().int().nonnegative() })),
+    /**
+     * The labels on this page, replaced by exactly this set.
+     *
+     * `set`, not `add`: a picker with three labels ticked sends three, and a picker with one ticked
+     * sends one and means the other two are gone. An additive procedure cannot express unticking
+     * without a second one to pair with it, and the pair then has to agree about a page two people
+     * are editing. Every label has to be one of the space's own — a label belongs to a space, so
+     * putting another space's label on a page would leak its vocabulary across the boundary.
+     */
+    setLabels: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/labels', ...t('pages') })
+      .input(ws.extend({ pageId: Id, labelIds: z.array(Id).max(50) }))
+      .output(z.array(Label)),
   },
 
   versions: {
@@ -352,6 +404,106 @@ export const quireContract = {
     setRelation: baseContract
       .route({ method: 'POST', path: '/rows/{rowId}/relations', ...t('databases') })
       .input(ws.extend({ rowId: Id, propertyId: Id, toPageIds: z.array(Id).max(200) }))
+      .output(Ok),
+  },
+
+  /**
+   * The vocabulary a space puts on its pages.
+   *
+   * Reading is `quire.space.view` and writing is `quire.space.manage`, because a label is part of a
+   * space's configuration rather than a page's content: renaming "Draft" changes what it means on
+   * every page that wears it, which is not a thing somebody who may edit one page should be able to
+   * do to everybody else's.
+   */
+  labels: {
+    list: baseContract
+      .route({ method: 'GET', path: '/spaces/{spaceId}/labels', ...t('labels') })
+      .input(ws.extend({ spaceId: Id }))
+      .output(z.array(Label)),
+    /** What one page wears. `pages.setLabels` is the other half; without this one nothing draws it. */
+    forPage: baseContract
+      .route({ method: 'GET', path: '/pages/{pageId}/labels', ...t('labels') })
+      .input(ws.extend({ pageId: Id }))
+      .output(z.array(Label)),
+    create: baseContract
+      .route({ method: 'POST', path: '/spaces/{spaceId}/labels', ...t('labels') })
+      .input(ws.extend({ spaceId: Id, name: Label.shape.name, colour: LabelColour.default('grey') }))
+      .output(Label),
+    update: baseContract
+      .route({ method: 'PATCH', path: '/labels/{labelId}', ...t('labels') })
+      .input(
+        ws.extend({
+          labelId: Id,
+          name: Label.shape.name.optional(),
+          colour: LabelColour.optional(),
+        }),
+      )
+      .output(Label),
+    /** Off every page that wore it, too — a label nothing can name is not a label anybody can remove. */
+    remove: baseContract
+      .route({ method: 'DELETE', path: '/labels/{labelId}', ...t('labels') })
+      .input(ws.extend({ labelId: Id }))
+      .output(Ok),
+  },
+
+  /**
+   * One person's own shortcuts, in the order they arranged them.
+   *
+   * Every procedure here is filtered to the caller. Row-level security fences the *workspace*, which
+   * is the tenant boundary and not a privacy boundary — one colleague's favourites are as visible to
+   * the policy as your own — so the `user_id` in each of these queries is the only thing keeping a
+   * sidebar personal. The three mutations all answer with the whole ordered list rather than the one
+   * row they touched: a fractional-index reorder is only meaningful as an ordering, the list is one
+   * person's and therefore short, and it saves the sidebar a refetch to redraw itself.
+   */
+  favorites: {
+    list: baseContract
+      .route({ method: 'GET', path: '/favorites', ...t('favorites') })
+      .input(ws)
+      .output(z.array(FavoriteEntry)),
+    /** Lands at the end. Starring the same page twice is the same star, not an error. */
+    add: baseContract
+      .route({ method: 'POST', path: '/favorites', ...t('favorites') })
+      .input(ws.extend({ pageId: Id }))
+      .output(z.array(FavoriteEntry)),
+    remove: baseContract
+      .route({ method: 'DELETE', path: '/favorites/{pageId}', ...t('favorites') })
+      .input(ws.extend({ pageId: Id }))
+      .output(z.array(FavoriteEntry)),
+    /** `afterId` is the favourite to land behind; null means first. The rank is minted server-side. */
+    reorder: baseContract
+      .route({ method: 'POST', path: '/favorites/{pageId}/move', ...t('favorites') })
+      .input(ws.extend({ pageId: Id, afterId: Id.nullable().default(null) }))
+      .output(z.array(FavoriteEntry)),
+  },
+
+  /** Who asked to hear about a page. Deliberately not the same list as who bookmarked it. */
+  watchers: {
+    get: baseContract
+      .route({ method: 'GET', path: '/pages/{pageId}/watchers', ...t('watchers') })
+      .input(ws.extend({ pageId: Id }))
+      .output(WatchState),
+    set: baseContract
+      .route({ method: 'POST', path: '/pages/{pageId}/watchers', ...t('watchers') })
+      .input(ws.extend({ pageId: Id, watching: z.boolean().default(true) }))
+      .output(WatchState),
+  },
+
+  /**
+   * Where this person has just been, newest first — and only this person.
+   *
+   * `record` is what a page view calls; it bumps one row rather than appending to a log, so the
+   * table is bounded by pages-times-people instead of growing for ever to answer a question that
+   * only ever wants the most recent handful.
+   */
+  recents: {
+    list: baseContract
+      .route({ method: 'GET', path: '/recents', ...t('recents') })
+      .input(ws.extend({ limit: z.number().int().min(1).max(50).default(10) }))
+      .output(z.array(RecentEntry)),
+    record: baseContract
+      .route({ method: 'POST', path: '/recents', ...t('recents') })
+      .input(ws.extend({ pageId: Id }))
       .output(Ok),
   },
 

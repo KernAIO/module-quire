@@ -49,6 +49,24 @@ export const quireClientModule = defineClientModule({
       component: () => import('./pages/SpacePage.svelte'),
       permission: QUIRE_PERMISSIONS.spaceView,
     },
+    /**
+     * Declared before `/quire/:space/:page` for a reader's benefit only — the shell resolves by
+     * specificity, not by order, so the two literal segments here beat the one in the page route
+     * whatever sequence they are written in. A page whose id happened to be "trash" could not
+     * shadow this, and a space could not shadow the spaces index either.
+     *
+     * `page.edit`, matching what `pages.trash` asks on the server: the trash is where an edit is
+     * undone, so anybody who may edit a page in this space may see what has been taken out of it.
+     * Purging is `page.delete` and is gated on the row.
+     */
+    {
+      path: '/quire/:space/trash',
+      component: () => import('./pages/TrashPage.svelte'),
+      get title() {
+        return t('trash')
+      },
+      permission: QUIRE_PERMISSIONS.pageEdit,
+    },
     {
       path: '/quire/:space/:page',
       component: () => import('./pages/PageView.svelte'),

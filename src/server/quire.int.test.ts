@@ -227,12 +227,17 @@ describe('migrations', () => {
     expect(tables.map((r) => r.relname)).toEqual([
       'comments',
       'databases',
+      'favorites',
+      'labels',
+      'page_labels',
       'page_versions',
       'pages',
       'properties',
+      'recent_views',
       'relations',
       'spaces',
       'views',
+      'watchers',
     ])
     for (const t of tables) {
       expect(t.relrowsecurity, `${t.relname} has RLS off`).toBe(true)
@@ -254,23 +259,29 @@ describe('migrations', () => {
     expect(res.rows[0]?.collname).toBe('C')
   })
 
-  it('sorts column and view positions by code point too', async () => {
-    // `pages.position` carried `COLLATE "C"` from the first migration and these two did not, so a
-    // database's second view — rank 'k' against the first's 'V' — sorted in front of it, and moving
-    // a column put it somewhere nobody asked for. Nothing failed; the rows came back in the wrong
-    // order, which is the only symptom a collation bug has.
+  it('sorts every other fractional index by code point too', async () => {
+    // `pages.position` carried `COLLATE "C"` from the first migration and `properties` and `views`
+    // did not, so a database's second view — rank 'k' against the first's 'V' — sorted in front of
+    // its first, and moving a column put it somewhere nobody asked for. Nothing failed; the rows
+    // came back in the wrong order, which is the only symptom a collation bug has.
+    //
+    // Every `position` column rather than a list of the ones that exist today. drizzle-kit does not
+    // carry collation in its snapshot, so a regenerated migration drops it silently and a new
+    // fractional index is born without it — naming the tables here would mean this test only ever
+    // guards the columns somebody remembered to add to it, which is how the last two were missed.
     const res = await kernel.database.db.execute<{ relname: string; collname: string }>(
       `select c.relname, coll.collname from pg_attribute a
          join pg_class c on c.oid = a.attrelid
          join pg_collation coll on coll.oid = a.attcollation
         where c.relnamespace = 'mod_quire'::regnamespace
-          and c.relname in ('properties', 'views') and a.attname = 'position'
+          and c.relkind = 'r' and a.attname = 'position' and a.attnum > 0
         order by c.relname`,
     )
-    expect(res.rows.map((r) => [r.relname, r.collname])).toEqual([
-      ['properties', 'C'],
-      ['views', 'C'],
-    ])
+    expect(res.rows.length, 'no position column found — this test is checking nothing').toBeGreaterThan(3)
+    for (const row of res.rows) {
+      expect(row.collname, `${row.relname}.position is not COLLATE "C"`).toBe('C')
+    }
+    expect(res.rows.map((r) => r.relname)).toContain('favorites')
   })
 
   it('applies again without changing anything', async () => {
@@ -461,7 +472,7 @@ describe('trash', () => {
       'a trashed page is out of the tree',
     ).toBe(false)
 
-    const listed = await run((tx) => svc.pages.trash(tx, WS_A, space.id, 50, null))
+    const listed = await run((tx) => svc.pages.trash(tx, alice(), WS_A, space.id, 50, null))
     expect(listed.items.map((p: Page) => p.id)).toContain(parent.id)
 
     await run((tx) => svc.pages.restore(tx, WS_A, parent.id))

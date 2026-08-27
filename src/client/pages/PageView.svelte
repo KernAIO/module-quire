@@ -412,8 +412,15 @@ async function trash() {
   background: none;
   padding: 0;
 }
-.title-field:focus {
+/*
+ * The title is the page's heading, not a form field, so it carries no ring — the caret says where
+ * you are. `outline: none` is not enough on its own: the global `:focus-visible` rule draws a
+ * `box-shadow`, which drew a box around the title on every click.
+ */
+.title-field:focus,
+.title-field:focus-visible {
   outline: none;
+  box-shadow: none;
 }
 .byline {
   display: flex;

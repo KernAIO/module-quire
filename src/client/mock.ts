@@ -14,6 +14,7 @@ import type {
   Property,
   PropertyConfig,
   PropertyType,
+  Publication,
   RecentEntry,
   RowRef,
   Space,
@@ -153,8 +154,16 @@ export function createMockQuireApi() {
       publishedVersionId: uid(153),
       hasUnpublishedChanges: true,
     }),
-    page(103, uid(1), 'Your first week', 'ba', 102),
-    page(104, uid(1), 'Time off', 'bb', 102),
+    /*
+     * Both published, because the share dialog is judged on the difference between them.
+     *
+     * "Your first week" is in the published site; "Time off" is published and *opted out*, so the
+     * demo shows a page that could be public and is deliberately not — which is the one row in that
+     * list nobody would otherwise see. A child with no published version at all would have looked
+     * the same on screen for an entirely different reason, and the dialog says which is which.
+     */
+    page(103, uid(1), 'Your first week', 'ba', 102, { publishedVersionId: uid(155) }),
+    page(104, uid(1), 'Time off', 'bb', 102, { publishedVersionId: uid(156) }),
     page(105, uid(1), 'Expenses', 'c', null, { kind: 'live' }),
     /*
      * A subtree in the trash, because that is the case the trash screen exists for.
@@ -349,6 +358,16 @@ export function createMockQuireApi() {
       36e5,
       COLLEAGUE,
     ),
+    version(
+      155,
+      uid(103),
+      'publish',
+      null,
+      'Everything worth doing in your first five days, in the order it is worth doing it.',
+      864e5,
+      ME,
+    ),
+    version(156, uid(104), 'publish', null, 'How much you get, and how to book it.', 1728e5, COLLEAGUE),
   ]
 
   const richDoc = (text: string): Record<string, unknown> => ({
@@ -469,6 +488,55 @@ export function createMockQuireApi() {
     { pageId: uid(102), viewedAt: iso(6e5) },
     { pageId: uid(110), viewedAt: iso(18e5) },
     { pageId: uid(201), viewedAt: iso(9e6) },
+  ]
+
+  /**
+   * What has been handed to the internet, and what is held back from it.
+   *
+   * One publication, rooted at "Working here", so `dev:mock` opens on the published state rather
+   * than on the empty one — the empty one is a single button and the populated one is the whole
+   * screen. "Time off" is opted out, which is what makes the per-page list in the dialog say
+   * something rather than being four switches all pointing the same way.
+   *
+   * `excludedFromPublic` is a set here rather than a column on the row for the same reason the
+   * watchers and the labels are maps: `strip()` only removes `_order`, so anything hung on a `Row`
+   * ends up in the `Page` a screen is handed, and this one is a flag about publishing that no
+   * screen should read off a page.
+   */
+  const excludedFromPublic = new Set<string>([uid(104)])
+
+  /**
+   * The password is kept in the clear here, and only here.
+   *
+   * The server keeps a scrypt hash and never gives one back, which is why `Publication` carries
+   * `hasPassword` and no hash at all — see the note on the model. The mock has to compare something
+   * to answer `public.unlock`, so it keeps the password beside the row and strips it on the way out
+   * through `publicationOut`, exactly where the server's own boundary is.
+   */
+  type PublicationRow = Omit<Publication, 'hasPassword'> & { password: string | null }
+  const publicationOut = ({ password, ...rest }: PublicationRow): Publication => ({
+    ...rest,
+    hasPassword: password !== null,
+  })
+
+  const publications: PublicationRow[] = [
+    {
+      id: uid(400),
+      workspaceId: '' as Publication['workspaceId'],
+      rootPageId: uid(102),
+      includeDescendants: true,
+      slug: 'working-here',
+      password: null,
+      expiresAt: null,
+      seoTitle: 'How this team works',
+      seoDescription: 'The handbook we point every new person at on their first morning.',
+      ogImageUrl: null,
+      indexable: true,
+      theme: 'auto',
+      createdBy: ME as Publication['createdBy'],
+      createdAt: iso(432e5),
+      updatedAt: iso(432e5),
+    },
   ]
 
   let seq = 900
@@ -618,6 +686,127 @@ export function createMockQuireApi() {
       const found = labels.find((l) => l.id === id)
       return found ? [found] : []
     })
+
+  // ---------------------------------------------------------------------------------------------
+  // What a signed-out stranger sees
+  // ---------------------------------------------------------------------------------------------
+
+  const thePublication = (id: string): PublicationRow => {
+    const found = publications.find((p) => p.id === id)
+    if (!found) throw notFound('Publication')
+    return found
+  }
+
+  /**
+   * The five things that keep a page out of a published site, reproduced rather than approximated.
+   *
+   * A demo whose public walk is looser than the server's is worse than no demo: it shows a page in
+   * the site that the real thing would refuse, and the one screen this mock exists to exercise is
+   * the one where that difference is a leak. So the rules are the server's, in the server's order —
+   * only a `page` (never a live doc, a database or a row), not archived, not trashed, not opted
+   * out, and **actually rendered once**, because a page with no published version has nothing to
+   * serve however the tree is shaped.
+   */
+  const isPublicPage = (row: Row): boolean =>
+    row.kind === 'page' &&
+    !row._databaseId &&
+    !row.deletedAt &&
+    !row.archivedAt &&
+    !excludedFromPublic.has(row.id) &&
+    row.publishedVersionId !== null
+
+  /** The server's own slug rule: Unicode letters and digits, so a Persian title keeps a Persian slug. */
+  const slugifyTitle = (title: string): string =>
+    title
+      .normalize('NFC')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60)
+      .replace(/-+$/g, '') || 'untitled'
+
+  interface PublicNode {
+    row: Row
+    path: string
+    parentPath: string | null
+  }
+
+  /**
+   * Walk the publication, pruning rather than filtering.
+   *
+   * The distinction is the whole security model and it is worth reproducing here: a page whose
+   * *parent* did not survive is unreachable, so it never enters the walk — a child of an opted-out
+   * page is not public even though nobody opted the child out. Filtering a flat list would have
+   * kept it.
+   */
+  const publicWalk = (pub: PublicationRow): PublicNode[] => {
+    const root = pages.find((p) => p.id === pub.rootPageId)
+    if (!root || !isPublicPage(root)) return []
+    const out: PublicNode[] = [{ row: root, path: '', parentPath: null }]
+    if (!pub.includeDescendants) return out
+    const queue: PublicNode[] = [...out]
+    while (queue.length > 0) {
+      const parent = queue.shift() as PublicNode
+      const taken = new Set<string>()
+      const children = pages
+        .filter((p) => p.parentId === parent.row.id)
+        .sort((a, b) => (a._order < b._order ? -1 : a._order > b._order ? 1 : 0))
+      for (const child of children) {
+        if (!isPublicPage(child)) continue
+        const base = slugifyTitle(child.title)
+        let slug = base
+        for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`
+        taken.add(slug)
+        const node: PublicNode = {
+          row: child,
+          path: parent.path === '' ? slug : `${parent.path}/${slug}`,
+          parentPath: parent.path,
+        }
+        out.push(node)
+        queue.push(node)
+      }
+    }
+    return out
+  }
+
+  const publishedAtOf = (row: Row): string =>
+    (row.publishedVersionId ? versions.find((v) => v.id === row.publishedVersionId) : null)?.createdAt ??
+    row.updatedAt
+
+  const normalisePath = (path: string) =>
+    path
+      .normalize('NFC')
+      .replace(/^\/+|\/+$/g, '')
+      .toLowerCase()
+
+  /** Expired is gone, checked on the request rather than by a sweep — as the server does it. */
+  const publicationBySlug = (slug: string): PublicationRow => {
+    const pub = publications.find((p) => p.slug === slug)
+    if (!pub) throw notFound('Publication')
+    if (pub.expiresAt && new Date(pub.expiresAt).getTime() <= Date.now()) throw notFound('Publication')
+    return pub
+  }
+
+  /** A capability token, carrying no identity — the shape the server mints, without the sealing. */
+  const tokenFor = (pub: PublicationRow) => `mock-unlock:${pub.id}`
+  const unlocked = (pub: PublicationRow, token: string | null) =>
+    pub.password === null || token === tokenFor(pub)
+
+  const escapeHtml = (text: string) =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+  /**
+   * There is no renderer here, so the published version's preview stands in for its prose.
+   *
+   * Escaped rather than interpolated: the demo is where somebody types `<script>` into a title to
+   * see what happens, and a mock that answers with it unescaped teaches the wrong lesson about a
+   * surface whose whole job is to be safe.
+   */
+  const publicHtmlOf = (row: Row): string => {
+    const preview =
+      (row.publishedVersionId ? versions.find((v) => v.id === row.publishedVersionId) : null)?.preview ?? ''
+    return preview ? `<p>${escapeHtml(preview)}</p>` : ''
+  }
 
   /**
    * A copy on the way out, because a real API answers with fresh JSON every time.
@@ -804,6 +993,8 @@ export function createMockQuireApi() {
           icon: r.icon,
           hasChildren: parents.has(r.id),
           archivedAt: r.archivedAt,
+          excludedFromPublic: excludedFromPublic.has(r.id),
+          hasPublishedVersion: r.publishedVersionId !== null,
         }))
       },
       get: async ({ pageId }: { pageId: string }) => strip(found(pageId)),
@@ -1216,6 +1407,239 @@ export function createMockQuireApi() {
         row.hasUnpublishedChanges = false
         touch(row)
         return strip(row)
+      },
+    },
+
+    publications: {
+      list: async ({ spaceId }: { spaceId: string }) =>
+        publications
+          .filter((p) => pages.find((row) => row.id === p.rootPageId)?.spaceId === spaceId)
+          .map(publicationOut),
+
+      get: async ({ publicationId }: { publicationId: string }) =>
+        publicationOut(thePublication(publicationId)),
+
+      create: async (input: {
+        rootPageId: string
+        slug: string
+        includeDescendants?: boolean
+        password?: string | null
+        expiresAt?: string | null
+        seoTitle?: string
+        seoDescription?: string
+        ogImageUrl?: string | null
+        indexable?: boolean
+        theme?: Publication['theme']
+      }) => {
+        found(input.rootPageId)
+        if (publications.some((p) => p.slug === input.slug))
+          throw Object.assign(new Error(`Another site already uses the address “${input.slug}”`), {
+            code: 'CONFLICT',
+          })
+        const row: PublicationRow = {
+          id: nextId(),
+          workspaceId: '' as Publication['workspaceId'],
+          rootPageId: input.rootPageId,
+          includeDescendants: input.includeDescendants ?? true,
+          slug: input.slug,
+          password: input.password ?? null,
+          expiresAt: input.expiresAt ?? null,
+          seoTitle: input.seoTitle ?? '',
+          seoDescription: input.seoDescription ?? '',
+          ogImageUrl: input.ogImageUrl ?? null,
+          indexable: input.indexable ?? true,
+          theme: input.theme ?? 'auto',
+          createdBy: ME as Publication['createdBy'],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        publications.push(row)
+        return publicationOut(row)
+      },
+
+      /**
+       * `password` is three-valued here too, and the mock is where that is easiest to get wrong: a
+       * key left out changes nothing, `null` takes the door off, a string sets a new one. Spreading
+       * the patch would turn every "rename the site" into an "unlock the site".
+       */
+      update: async ({
+        publicationId,
+        ...patch
+      }: {
+        publicationId: string
+        slug?: string
+        includeDescendants?: boolean
+        password?: string | null
+        expiresAt?: string | null
+        seoTitle?: string
+        seoDescription?: string
+        ogImageUrl?: string | null
+        indexable?: boolean
+        theme?: Publication['theme']
+      }) => {
+        const row = thePublication(publicationId)
+        if (patch.slug !== undefined && publications.some((p) => p.slug === patch.slug && p.id !== row.id))
+          throw Object.assign(new Error(`Another site already uses the address “${patch.slug}”`), {
+            code: 'CONFLICT',
+          })
+        for (const [key, value] of Object.entries(patch))
+          if (value !== undefined) Object.assign(row, { [key]: value })
+        row.updatedAt = new Date().toISOString()
+        return publicationOut(row)
+      },
+
+      remove: async ({ publicationId }: { publicationId: string }) => {
+        const row = thePublication(publicationId)
+        publications.splice(publications.indexOf(row), 1)
+        return { ok: true as const }
+      },
+
+      optOut: async ({ pageId, excluded = true }: { pageId: string; excluded?: boolean }) => {
+        found(pageId)
+        if (excluded) excludedFromPublic.add(pageId)
+        else excludedFromPublic.delete(pageId)
+        return { pageId, excluded }
+      },
+    },
+
+    /**
+     * The signed-out surface, reproduced so the share dialog's "what does a stranger see" check has
+     * something honest to answer it in `dev:mock`.
+     *
+     * There is no principal to ignore here, which is exactly the point: none of these reads the
+     * signed-in member the rest of this file assumes. Everything they answer comes out of
+     * `publicWalk`, so a page the walk pruned cannot be reached by asking for it by path either.
+     */
+    public: {
+      site: async ({ slug, token = null }: { slug: string; token?: string | null }) => {
+        const pub = publicationBySlug(slug)
+        if (!unlocked(pub, token)) return { slug: pub.slug, theme: pub.theme, locked: true, site: null }
+        const nodes = publicWalk(pub)
+        const root = nodes[0]
+        if (!root) throw notFound('Publication')
+        return {
+          slug: pub.slug,
+          theme: pub.theme,
+          locked: false,
+          site: {
+            title: pub.seoTitle || root.row.title || 'Untitled',
+            description: pub.seoDescription,
+            ogImageUrl: pub.ogImageUrl,
+            indexable: pub.indexable,
+            updatedAt: nodes
+              .map((n) => publishedAtOf(n.row))
+              .sort()
+              .at(-1) as string,
+            nav: nodes.map((n) => ({
+              path: n.path,
+              parentPath: n.parentPath,
+              title: n.row.title || 'Untitled',
+              icon: n.row.icon,
+            })),
+          },
+        }
+      },
+
+      /**
+       * `basePath` is accepted and unused, deliberately.
+       *
+       * The real handler rewrites every inter-page link in the rendered HTML against it, and there
+       * is no rendered HTML here — but a mock whose *signature* differs from the contract is a
+       * screen that works in the demo and throws in production, which is the one thing this file
+       * exists to prevent.
+       */
+      page: async ({
+        slug,
+        path = '',
+        token = null,
+      }: {
+        slug: string
+        path?: string
+        basePath?: string
+        token?: string | null
+      }) => {
+        const pub = publicationBySlug(slug)
+        if (!unlocked(pub, token)) throw notFound('Page')
+        const nodes = publicWalk(pub)
+        const wanted = normalisePath(path)
+        const node = nodes.find((n) => normalisePath(n.path) === wanted)
+        if (!node) throw notFound('Page')
+        const trail: { path: string; title: string }[] = []
+        for (let at: PublicNode | undefined = node; at; ) {
+          trail.unshift({ path: at.path, title: at.row.title || 'Untitled' })
+          const parentPath: string | null = at.parentPath
+          at = parentPath === null ? undefined : nodes.find((n) => n.path === parentPath)
+        }
+        return {
+          path: node.path,
+          title: node.row.title || 'Untitled',
+          icon: node.row.icon,
+          coverUrl: node.row.coverUrl,
+          html: publicHtmlOf(node.row),
+          publishedAt: publishedAtOf(node.row),
+          // A hash of the version rather than the version id, because the id addresses a procedure
+          // that asks a permission. There is nothing to hash with here, so it is prefixed instead —
+          // what matters is that the value a browser caches on is not an identifier of anything.
+          etag: `mock-${node.row.publishedVersionId ?? 'none'}`,
+          breadcrumbs: trail,
+        }
+      },
+
+      /**
+       * Reads the published version's text, never the draft.
+       *
+       * The mock has one string per version and it is the published one, so this is true here by
+       * construction rather than by care — which is the reason to write the search against
+       * `versions` rather than against `pages`, even though both would look right in a demo.
+       */
+      search: async ({ slug, q, limit = 20 }: { slug: string; q: string; limit?: number }) => {
+        const pub = publicationBySlug(slug)
+        const needle = q.trim().toLowerCase()
+        const items = publicWalk(pub)
+          .flatMap((node) => {
+            const preview =
+              (node.row.publishedVersionId
+                ? versions.find((v) => v.id === node.row.publishedVersionId)
+                : null
+              )?.preview ?? ''
+            const haystack = `${node.row.title} ${preview}`.toLowerCase()
+            if (!haystack.includes(needle)) return []
+            return [{ path: node.path, title: node.row.title || 'Untitled', snippet: preview.slice(0, 200) }]
+          })
+          .slice(0, limit)
+        return { items }
+      },
+
+      // A site behind a password, or one asked to stay out of search, has an empty sitemap rather
+      // than a private one — the file exists to be fetched by robots.
+      sitemap: async ({ slug }: { slug: string }) => {
+        const pub = publicationBySlug(slug)
+        if (pub.password !== null || !pub.indexable) return { entries: [] }
+        return {
+          entries: publicWalk(pub).map((n) => ({
+            path: n.path,
+            lastModified: publishedAtOf(n.row),
+          })),
+        }
+      },
+
+      // The one call that never distinguishes a missing slug from an expired or locked one.
+      robots: async ({ slug }: { slug: string }) => {
+        const pub = publications.find((p) => p.slug === slug)
+        const gone = !pub || (pub.expiresAt !== null && new Date(pub.expiresAt).getTime() <= Date.now())
+        if (gone || pub.password !== null || !pub.indexable) return { indexable: false, sitemapPath: null }
+        return { indexable: true, sitemapPath: 'sitemap.xml' }
+      },
+
+      unlock: async ({ slug, password }: { slug: string; password: string }) => {
+        const pub = publicationBySlug(slug)
+        // A site with no password has no door, and saying so would confirm the slug exists.
+        if (pub.password === null) throw notFound('Publication')
+        if (pub.password !== password)
+          throw Object.assign(new Error('That password does not open this site'), {
+            code: 'UNAUTHORIZED',
+          })
+        return { token: tokenFor(pub), expiresAt: new Date(Date.now() + 12 * 36e5).toISOString() }
       },
     },
 

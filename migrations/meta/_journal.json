@@ -57,6 +57,13 @@
       "when": 1787855855860,
       "tag": "0007_organisation",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787867827617,
+      "tag": "0008_publications",
+      "breakpoints": true
     }
   ]
 }

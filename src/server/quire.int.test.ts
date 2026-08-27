@@ -233,6 +233,7 @@ describe('migrations', () => {
       'page_versions',
       'pages',
       'properties',
+      'publications',
       'recent_views',
       'relations',
       'spaces',

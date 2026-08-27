@@ -87,6 +87,30 @@ export const PageNode = z.object({
   icon: z.string().nullable(),
   hasChildren: z.boolean(),
   archivedAt: Timestamp.nullable(),
+  /**
+   * Kept out of every publication, present and future — `publications.optOut` sets it.
+   *
+   * On the node rather than on `Page` because the only screen that reads it is a *list*: the share
+   * dialog draws one row per descendant with a switch on it, and a switch whose state has to be
+   * fetched page by page is a screen that opens with everything wrong and corrects itself. Two more
+   * booleans on a row the sidebar already loads for the whole space is the cheap end of that trade.
+   *
+   * `.default(false)` so a tree drawn by a client newer than its server still parses; the inferred
+   * output type is required either way, which is what makes both constructors supply it.
+   */
+  excludedFromPublic: z.boolean().default(false),
+  /**
+   * Whether a reader without edit rights has anything to be served — `publishedVersionId != null`,
+   * as a boolean, because the id itself addresses `versions.get` and a tree row has no business
+   * carrying it.
+   *
+   * Here for the same list as the flag above, and it is the half that stops that list lying. An
+   * opt-out switch on its own says "this page is public" about a page nobody has ever published,
+   * which is the wrong answer in the safe direction — and a screen that is wrong in the safe
+   * direction today is one nobody checks tomorrow. Always false for a `live` doc and a `database`:
+   * neither has a published version, because `publishing.publish` refuses anything but a `page`.
+   */
+  hasPublishedVersion: z.boolean().default(false),
 })
 export type PageNode = z.infer<typeof PageNode>
 
@@ -243,5 +267,58 @@ export const Watcher = z.object({
   createdAt: Timestamp,
 })
 export type Watcher = z.infer<typeof Watcher>
+
+/**
+ * How a published site is coloured. `auto` follows the reader's own setting rather than the
+ * author's, which is the only one of the three that is a preference and not an instruction.
+ */
+export const PublicationTheme = z.enum(['auto', 'light', 'dark'])
+export type PublicationTheme = z.infer<typeof PublicationTheme>
+
+/**
+ * A page, and everything under it, at a URL a signed-out stranger can open.
+ *
+ * The row *is* the grant: no publication, no public page, and deleting it takes the site down. What
+ * a reader is served is the **pinned published version** of each page — `Page.publishedVersionId`
+ * and the HTML rendered onto it — never the live document and never the draft. A page with no
+ * published version is not public, whatever the tree says.
+ *
+ * There is no `passwordHash` here and there never should be. `hasPassword` is the whole of what a
+ * client needs: whether to ask. A hash is a hash, a salt and a cost, and shipping it to a browser
+ * turns an online guess into an offline one.
+ */
+export const Publication = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  /** the page the site is rooted at; its own published version is the front page */
+  rootPageId: Id,
+  /** false publishes exactly one page, which is what a single shared document wants */
+  includeDescendants: z.boolean(),
+  /**
+   * The URL segment. Unique per workspace and not beyond it — the public URL carries the workspace,
+   * so two customers both wanting `handbook` is not a collision. Lowercase by the same rule as
+   * `Space.key`: a URL that differs only in case is one URL to a person and two rows to Postgres.
+   */
+  slug: z
+    .string()
+    .min(2)
+    .max(64)
+    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'lowercase letters, digits and dashes'),
+  /** whether a password is set — never the hash, and never the password */
+  hasPassword: z.boolean(),
+  /** null never expires; past means the URL is gone */
+  expiresAt: Timestamp.nullable(),
+  /** what a search result and a link preview say; empty falls back to the root page's own title */
+  seoTitle: z.string().max(200),
+  seoDescription: z.string().max(500),
+  ogImageUrl: z.string().max(2048).nullable(),
+  /** false sends `noindex`. Public and findable are different requests, and people mean both. */
+  indexable: z.boolean(),
+  theme: PublicationTheme,
+  createdBy: UserId.nullable(),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+})
+export type Publication = z.infer<typeof Publication>
 
 export const Ok = z.object({ ok: z.literal(true) })

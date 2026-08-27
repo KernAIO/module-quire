@@ -418,6 +418,110 @@ export const en: Record<string, Message> = {
     one: '{n} person is watching',
     other: '{n} people are watching',
   },
+
+  /*
+   * Sharing a page to the web.
+   *
+   * The one screen in Quire where a misunderstanding is a data leak, so the wording is doing real
+   * work rather than labelling controls. Three rules held here and worth keeping:
+   *
+   *   - **Say "without signing in".** "Public" is the word every product uses and half of the people
+   *     reading it hear "public to my workspace". The sentence has to name the absence of an
+   *     account, because that is the part that surprises somebody afterwards.
+   *   - **Name the subtree, every time.** Publishing takes children with it. A sentence about "this
+   *     page" is true and incomplete, and incomplete is what a leak is made of.
+   *   - **Nothing here is in the future tense once it is true.** Before the button, "would be
+   *     public"; after it, "is public". A screen that keeps saying "will be" about something already
+   *     on the internet is teaching somebody it has not happened yet.
+   */
+  'quire.share_web': 'Share to web',
+  'quire.share_title': 'Share to web',
+  'quire.share_warn_title': 'Anyone with the link can read this, without signing in',
+  'quire.share_warn_body':
+    'Publishing puts this page, and every page nested under it, on the public internet. There is no account to make and no invitation to accept: whoever has the address can read it, and so can anyone they pass it to.',
+  'quire.share_warn_version':
+    'Readers are served the last version you published — never the draft you are writing.',
+  'quire.share_warn_unpublished':
+    'A page that has never been published stays private, even when it sits under one that is.',
+  'quire.share_warn_search': 'Search engines are allowed to list it unless you turn that off below.',
+  'quire.share_needs_publish':
+    'This page has no published version yet, so the site would have nothing to show. Publish the page first.',
+  'quire.share_address': 'Address',
+  'quire.share_address_hint': 'Lowercase letters, digits and dashes.',
+  'quire.share_address_invalid': 'Between 2 and 64 lowercase letters, digits or dashes.',
+  /*
+   * The address is *beside* this sentence, never interpolated into it.
+   *
+   * A Latin URL dropped into an Arabic or Persian paragraph is laid out by the bidi algorithm
+   * against the surrounding direction, and a string full of slashes and dots comes apart — the
+   * scheme ends up at the wrong end of the line. Rendering it as its own `dir="ltr"` element is the
+   * only way it survives, and a placeholder in the message cannot be one.
+   */
+  'quire.share_address_pending':
+    'When you save, the site moves here. The link above is the live one until then.',
+  'quire.share_link': 'Link',
+  'quire.share_copy': 'Copy link',
+  'quire.share_copied': 'Link copied',
+  'quire.share_copy_manually': 'The browser would not copy it. Select the link and copy it by hand.',
+  'quire.share_open': 'Open the published site',
+  'quire.share_include': 'Include the pages nested under this one',
+  'quire.share_include_desc': 'Off publishes this page on its own.',
+  'quire.share_count': {
+    one: '{n} page is nested under this one',
+    other: '{n} pages are nested under this one',
+  },
+  'quire.share_publish': 'Publish to the web',
+  'quire.share_published': 'This page is public',
+  'quire.share_published_when': 'Published {when}',
+  'quire.share_published_toast': 'This page is public. Anyone with the link can read it.',
+  'quire.share_check_running': 'Checking what a signed-out visitor sees…',
+  'quire.share_check_ok': {
+    one: 'A signed-out visitor sees {n} page.',
+    other: 'A signed-out visitor sees {n} pages.',
+  },
+  'quire.share_check_locked': 'A signed-out visitor is asked for the password before anything is shown.',
+  'quire.share_check_failed': 'A signed-out visitor cannot open this address yet.',
+  'quire.share_more': 'More options',
+  'quire.share_less': 'Fewer options',
+  'quire.share_password': 'Password',
+  'quire.share_password_hint':
+    'At least 6 characters. Readers are asked for it before they see anything at all, including the list of pages.',
+  'quire.share_password_keep': 'Leave this empty to keep the password already set.',
+  'quire.share_password_on': 'A password is set',
+  'quire.share_password_remove': 'Remove the password',
+  'quire.share_expires': 'Stop working on',
+  'quire.share_expires_hint': 'The link stops opening after this date. Leave it empty and it never expires.',
+  'quire.share_indexable': 'Let search engines list it',
+  'quire.share_indexable_desc':
+    'Off asks crawlers to leave it out. Public and findable are not the same request.',
+  'quire.share_seo_title': 'Title in search results',
+  'quire.share_seo_title_hint': 'Empty uses the page’s own title.',
+  'quire.share_seo_description': 'Description in search results',
+  'quire.share_og_image': 'Link preview image',
+  'quire.share_og_image_hint': 'Shown when somebody pastes the link into a chat. Paste the image’s address.',
+  'quire.share_theme': 'Theme',
+  'quire.share_theme_auto': 'Follow the reader’s own setting',
+  'quire.share_theme_light': 'Light',
+  'quire.share_theme_dark': 'Dark',
+  'quire.share_children': 'Pages inside this one',
+  'quire.share_children_desc':
+    'Turn one off to keep it, and everything under it, out of every published site — this one and any made later.',
+  'quire.share_children_none': 'Nothing is nested under this page.',
+  'quire.share_children_off': 'Only this page is published, so nothing nested under it is public.',
+  'quire.share_child_private': 'Kept private',
+  'quire.share_child_blocked': 'Under a page that is kept private',
+  'quire.share_child_draft': 'Never published',
+  'quire.share_child_archived': 'Archived',
+  'quire.share_save': 'Save changes',
+  'quire.share_saved': 'Saved',
+  'quire.share_unpublish': 'Unpublish',
+  'quire.share_unpublish_ask':
+    'Take the site down? The link stops working for everybody. Nothing you have written is deleted.',
+  'quire.share_unpublish_done': 'The site has been taken down',
+  'quire.share_done': 'Done',
+  'quire.public_chip': 'Public',
+  'quire.public_chip_root': 'Anyone with the link can read this page and everything under it',
+  'quire.public_chip_child': 'This page is part of a published site anyone can read',
 }
 
 export type QuireMessageKey = keyof typeof en
@@ -864,6 +968,90 @@ const ar: Record<string, Message> = {
     many: 'يتابعها {n} شخصًا',
     other: 'يتابعها {n} شخص',
   },
+
+  'quire.share_web': 'النشر على الويب',
+  'quire.share_title': 'النشر على الويب',
+  'quire.share_warn_title': 'كل من يملك الرابط يقرأ هذا دون تسجيل دخول',
+  'quire.share_warn_body':
+    'النشر يضع هذه الصفحة، وكل صفحة تحتها، على الإنترنت العام. لا حساب يُنشأ ولا دعوة تُقبل: من يملك العنوان يقرأ، ومن يعطيه العنوان يقرأ أيضًا.',
+  'quire.share_warn_version': 'يرى القرّاء آخر نسخة نشرتها، لا المسودّة التي تكتبها.',
+  'quire.share_warn_unpublished': 'الصفحة التي لم تُنشر قط تبقى خاصة، حتى لو كانت تحت صفحة منشورة.',
+  'quire.share_warn_search': 'محرّكات البحث مسموح لها بإدراجه ما لم توقف ذلك في الأسفل.',
+  'quire.share_needs_publish':
+    'لا توجد نسخة منشورة من هذه الصفحة بعد، فلن يجد الموقع ما يعرضه. انشر الصفحة أولًا.',
+  'quire.share_address': 'العنوان',
+  'quire.share_address_hint': 'حروف لاتينية صغيرة وأرقام وشرطات.',
+  'quire.share_address_invalid': 'من ٢ إلى ٦٤ حرفًا لاتينيًا صغيرًا أو رقمًا أو شرطة.',
+  'quire.share_address_pending': 'عند الحفظ ينتقل الموقع إلى هنا. الرابط أعلاه هو العامل حتى ذلك الحين.',
+  'quire.share_link': 'الرابط',
+  'quire.share_copy': 'نسخ الرابط',
+  'quire.share_copied': 'نُسخ الرابط',
+  'quire.share_copy_manually': 'المتصفّح رفض النسخ. حدّد الرابط وانسخه بنفسك.',
+  'quire.share_open': 'فتح الموقع المنشور',
+  'quire.share_include': 'ضمّ الصفحات المتفرّعة عن هذه الصفحة',
+  'quire.share_include_desc': 'إيقافه ينشر هذه الصفحة وحدها.',
+  'quire.share_count': {
+    zero: 'لا صفحات متفرّعة عن هذه الصفحة',
+    one: 'صفحة واحدة متفرّعة عن هذه الصفحة',
+    two: 'صفحتان متفرّعتان عن هذه الصفحة',
+    few: '{n} صفحات متفرّعة عن هذه الصفحة',
+    many: '{n} صفحة متفرّعة عن هذه الصفحة',
+    other: '{n} صفحة متفرّعة عن هذه الصفحة',
+  },
+  'quire.share_publish': 'انشرها على الويب',
+  'quire.share_published': 'هذه الصفحة عامة',
+  'quire.share_published_when': 'نُشرت {when}',
+  'quire.share_published_toast': 'هذه الصفحة عامة الآن. كل من يملك الرابط يقرؤها.',
+  'quire.share_check_running': 'جارٍ التحقّق ممّا يراه زائر غير مسجّل…',
+  'quire.share_check_ok': {
+    zero: 'الزائر غير المسجّل لا يرى أي صفحة.',
+    one: 'الزائر غير المسجّل يرى صفحة واحدة.',
+    two: 'الزائر غير المسجّل يرى صفحتين.',
+    few: 'الزائر غير المسجّل يرى {n} صفحات.',
+    many: 'الزائر غير المسجّل يرى {n} صفحة.',
+    other: 'الزائر غير المسجّل يرى {n} صفحة.',
+  },
+  'quire.share_check_locked': 'يُطلب من الزائر غير المسجّل كلمة المرور قبل أن يرى أي شيء.',
+  'quire.share_check_failed': 'الزائر غير المسجّل لا يستطيع فتح هذا العنوان بعد.',
+  'quire.share_more': 'خيارات أخرى',
+  'quire.share_less': 'خيارات أقل',
+  'quire.share_password': 'كلمة المرور',
+  'quire.share_password_hint':
+    'ستة محارف على الأقل. تُطلب من القارئ قبل أن يرى أي شيء، بما في ذلك قائمة الصفحات.',
+  'quire.share_password_keep': 'اتركه فارغًا للإبقاء على كلمة المرور الحالية.',
+  'quire.share_password_on': 'كلمة المرور مضبوطة',
+  'quire.share_password_remove': 'إزالة كلمة المرور',
+  'quire.share_expires': 'يتوقّف في',
+  'quire.share_expires_hint': 'يتوقّف الرابط عن الفتح بعد هذا التاريخ. اتركه فارغًا فلا ينتهي أبدًا.',
+  'quire.share_indexable': 'اسمح لمحرّكات البحث بإدراجه',
+  'quire.share_indexable_desc': 'إيقافه يطلب من الزواحف تجاهله. «عام» و«يمكن العثور عليه» ليسا الطلب نفسه.',
+  'quire.share_seo_title': 'العنوان في نتائج البحث',
+  'quire.share_seo_title_hint': 'الفراغ يستخدم عنوان الصفحة نفسها.',
+  'quire.share_seo_description': 'الوصف في نتائج البحث',
+  'quire.share_og_image': 'صورة معاينة الرابط',
+  'quire.share_og_image_hint': 'تظهر حين يلصق أحدهم الرابط في محادثة. الصق عنوان الصورة.',
+  'quire.share_theme': 'المظهر',
+  'quire.share_theme_auto': 'اتّباع إعداد القارئ',
+  'quire.share_theme_light': 'فاتح',
+  'quire.share_theme_dark': 'داكن',
+  'quire.share_children': 'الصفحات داخل هذه الصفحة',
+  'quire.share_children_desc':
+    'أوقف واحدة لتبقى هي وكل ما تحتها خارج أي موقع منشور: هذا الموقع وما يُنشأ لاحقًا.',
+  'quire.share_children_none': 'لا شيء متفرّع عن هذه الصفحة.',
+  'quire.share_children_off': 'هذه الصفحة وحدها منشورة، فلا شيء متفرّع عنها عام.',
+  'quire.share_child_private': 'محفوظة خاصة',
+  'quire.share_child_blocked': 'تحت صفحة محفوظة خاصة',
+  'quire.share_child_draft': 'لم تُنشر قط',
+  'quire.share_child_archived': 'مؤرشفة',
+  'quire.share_save': 'حفظ التغييرات',
+  'quire.share_saved': 'حُفظ',
+  'quire.share_unpublish': 'إلغاء النشر',
+  'quire.share_unpublish_ask': 'هل تُنزل الموقع؟ يتوقّف الرابط عن العمل للجميع. لا يُحذف شيء ممّا كتبته.',
+  'quire.share_unpublish_done': 'أُنزل الموقع',
+  'quire.share_done': 'تمّ',
+  'quire.public_chip': 'عام',
+  'quire.public_chip_root': 'كل من يملك الرابط يقرأ هذه الصفحة وكل ما تحتها',
+  'quire.public_chip_child': 'هذه الصفحة جزء من موقع منشور يقرؤه الجميع',
 }
 
 const de: Record<string, Message> = {
@@ -1279,6 +1467,91 @@ const de: Record<string, Message> = {
     one: '{n} Person beobachtet die Seite',
     other: '{n} Personen beobachten die Seite',
   },
+
+  'quire.share_web': 'Im Web veröffentlichen',
+  'quire.share_title': 'Im Web veröffentlichen',
+  'quire.share_warn_title': 'Wer den Link hat, kann das ohne Anmeldung lesen',
+  'quire.share_warn_body':
+    'Veröffentlichen stellt diese Seite und jede darunter liegende Seite ins öffentliche Internet. Kein Konto, keine Einladung: Wer die Adresse hat, liest mit — und wer sie von dort bekommt, ebenso.',
+  'quire.share_warn_version':
+    'Lesende bekommen die zuletzt veröffentlichte Fassung, nie den Entwurf, an dem du schreibst.',
+  'quire.share_warn_unpublished':
+    'Eine nie veröffentlichte Seite bleibt privat, auch wenn sie unter einer veröffentlichten liegt.',
+  'quire.share_warn_search': 'Suchmaschinen dürfen die Seite listen, solange du das unten nicht abschaltest.',
+  'quire.share_needs_publish':
+    'Diese Seite hat noch keine veröffentlichte Fassung, die Website hätte also nichts zu zeigen. Veröffentliche zuerst die Seite.',
+  'quire.share_address': 'Adresse',
+  'quire.share_address_hint': 'Kleinbuchstaben, Ziffern und Bindestriche.',
+  'quire.share_address_invalid': '2 bis 64 Kleinbuchstaben, Ziffern oder Bindestriche.',
+  'quire.share_address_pending':
+    'Beim Speichern zieht die Website hierher um. Bis dahin ist der Link oben der aktive.',
+  'quire.share_link': 'Link',
+  'quire.share_copy': 'Link kopieren',
+  'quire.share_copied': 'Link kopiert',
+  'quire.share_copy_manually':
+    'Der Browser hat das Kopieren abgelehnt. Markiere den Link und kopiere ihn selbst.',
+  'quire.share_open': 'Veröffentlichte Website öffnen',
+  'quire.share_include': 'Die darunter liegenden Seiten mitveröffentlichen',
+  'quire.share_include_desc': 'Aus veröffentlicht nur diese eine Seite.',
+  'quire.share_count': {
+    one: '{n} Seite liegt unter dieser',
+    other: '{n} Seiten liegen unter dieser',
+  },
+  'quire.share_publish': 'Im Web veröffentlichen',
+  'quire.share_published': 'Diese Seite ist öffentlich',
+  'quire.share_published_when': 'Veröffentlicht {when}',
+  'quire.share_published_toast': 'Diese Seite ist öffentlich. Wer den Link hat, kann sie lesen.',
+  'quire.share_check_running': 'Wird geprüft, was ein abgemeldeter Besuch sieht …',
+  'quire.share_check_ok': {
+    one: 'Ein abgemeldeter Besuch sieht {n} Seite.',
+    other: 'Ein abgemeldeter Besuch sieht {n} Seiten.',
+  },
+  'quire.share_check_locked':
+    'Ein abgemeldeter Besuch wird nach dem Passwort gefragt, bevor irgendetwas zu sehen ist.',
+  'quire.share_check_failed': 'Ein abgemeldeter Besuch kann diese Adresse noch nicht öffnen.',
+  'quire.share_more': 'Mehr Einstellungen',
+  'quire.share_less': 'Weniger Einstellungen',
+  'quire.share_password': 'Passwort',
+  'quire.share_password_hint':
+    'Mindestens 6 Zeichen. Lesende werden danach gefragt, bevor sie irgendetwas sehen — auch die Seitenliste.',
+  'quire.share_password_keep': 'Leer lassen, um das bisherige Passwort zu behalten.',
+  'quire.share_password_on': 'Ein Passwort ist gesetzt',
+  'quire.share_password_remove': 'Passwort entfernen',
+  'quire.share_expires': 'Läuft ab am',
+  'quire.share_expires_hint':
+    'Nach diesem Datum öffnet der Link nicht mehr. Leer lassen, und er läuft nie ab.',
+  'quire.share_indexable': 'Von Suchmaschinen listen lassen',
+  'quire.share_indexable_desc':
+    'Aus bittet Crawler, sie auszulassen. Öffentlich und auffindbar sind zwei verschiedene Wünsche.',
+  'quire.share_seo_title': 'Titel in Suchergebnissen',
+  'quire.share_seo_title_hint': 'Leer nimmt den Titel der Seite selbst.',
+  'quire.share_seo_description': 'Beschreibung in Suchergebnissen',
+  'quire.share_og_image': 'Vorschaubild des Links',
+  'quire.share_og_image_hint':
+    'Wird gezeigt, wenn jemand den Link in einen Chat einfügt. Adresse des Bildes einfügen.',
+  'quire.share_theme': 'Erscheinungsbild',
+  'quire.share_theme_auto': 'Der Einstellung der Lesenden folgen',
+  'quire.share_theme_light': 'Hell',
+  'quire.share_theme_dark': 'Dunkel',
+  'quire.share_children': 'Seiten unter dieser',
+  'quire.share_children_desc':
+    'Schalte eine ab, damit sie — und alles darunter — aus jeder veröffentlichten Website herausbleibt: aus dieser und aus später angelegten.',
+  'quire.share_children_none': 'Unter dieser Seite liegt nichts.',
+  'quire.share_children_off': 'Nur diese Seite ist veröffentlicht, alles darunter bleibt privat.',
+  'quire.share_child_private': 'Bleibt privat',
+  'quire.share_child_blocked': 'Unter einer Seite, die privat bleibt',
+  'quire.share_child_draft': 'Nie veröffentlicht',
+  'quire.share_child_archived': 'Archiviert',
+  'quire.share_save': 'Änderungen speichern',
+  'quire.share_saved': 'Gespeichert',
+  'quire.share_unpublish': 'Veröffentlichung beenden',
+  'quire.share_unpublish_ask':
+    'Die Website abschalten? Der Link funktioniert dann für niemanden mehr. Nichts von dem, was du geschrieben hast, wird gelöscht.',
+  'quire.share_unpublish_done': 'Die Website ist abgeschaltet',
+  'quire.share_done': 'Fertig',
+  'quire.public_chip': 'Öffentlich',
+  'quire.public_chip_root': 'Wer den Link hat, kann diese Seite und alles darunter lesen',
+  'quire.public_chip_child': 'Diese Seite gehört zu einer veröffentlichten Website, die jeder lesen kann',
 }
 
 const fa: Record<string, Message> = {
@@ -1682,6 +1955,85 @@ const fa: Record<string, Message> = {
     one: '{n} نفر دنبال می‌کند',
     other: '{n} نفر دنبال می‌کنند',
   },
+
+  'quire.share_web': 'انتشار روی وب',
+  'quire.share_title': 'انتشار روی وب',
+  'quire.share_warn_title': 'هر کس پیوند را داشته باشد، بدون ورود این را می‌خواند',
+  'quire.share_warn_body':
+    'انتشار، این صفحه و هر صفحهٔ زیر آن را روی اینترنت عمومی می‌گذارد. نه حسابی ساخته می‌شود و نه دعوتی پذیرفته: هر کس نشانی را داشته باشد می‌خواند و هر کس نشانی را از او بگیرد هم می‌خواند.',
+  'quire.share_warn_version':
+    'خواننده آخرین نسخه‌ای را می‌بیند که منتشر کرده‌اید، نه پیش‌نویسی که در حال نوشتنش هستید.',
+  'quire.share_warn_unpublished': 'صفحه‌ای که هرگز منتشر نشده خصوصی می‌ماند، حتی اگر زیر صفحه‌ای منتشرشده باشد.',
+  'quire.share_warn_search': 'موتورهای جست‌وجو اجازه دارند آن را فهرست کنند، مگر پایین‌تر این را خاموش کنید.',
+  'quire.share_needs_publish':
+    'این صفحه هنوز نسخهٔ منتشرشده‌ای ندارد، پس سایت چیزی برای نشان‌دادن نخواهد داشت. نخست صفحه را منتشر کنید.',
+  'quire.share_address': 'نشانی',
+  'quire.share_address_hint': 'حروف کوچک لاتین، رقم و خط تیره.',
+  'quire.share_address_invalid': 'بین ۲ تا ۶۴ حرف کوچک لاتین، رقم یا خط تیره.',
+  'quire.share_address_pending': 'با ذخیره، سایت به اینجا می‌رود. تا آن وقت پیوند بالا همان پیوند زنده است.',
+  'quire.share_link': 'پیوند',
+  'quire.share_copy': 'رونوشت پیوند',
+  'quire.share_copied': 'پیوند رونوشت شد',
+  'quire.share_copy_manually': 'مرورگر رونوشت را انجام نداد. پیوند را انتخاب و خودتان رونوشت کنید.',
+  'quire.share_open': 'گشودن سایت منتشرشده',
+  'quire.share_include': 'صفحه‌های زیر این صفحه هم منتشر شوند',
+  'quire.share_include_desc': 'خاموش، تنها همین یک صفحه را منتشر می‌کند.',
+  'quire.share_count': {
+    one: '{n} صفحه زیر این صفحه است',
+    other: '{n} صفحه زیر این صفحه است',
+  },
+  'quire.share_publish': 'انتشار روی وب',
+  'quire.share_published': 'این صفحه عمومی است',
+  'quire.share_published_when': '{when} منتشر شد',
+  'quire.share_published_toast': 'این صفحه عمومی شد. هر کس پیوند را داشته باشد می‌خواند.',
+  'quire.share_check_running': 'بررسی آنچه بازدیدکنندهٔ واردنشده می‌بیند…',
+  'quire.share_check_ok': {
+    one: 'بازدیدکنندهٔ واردنشده {n} صفحه می‌بیند.',
+    other: 'بازدیدکنندهٔ واردنشده {n} صفحه می‌بیند.',
+  },
+  'quire.share_check_locked': 'پیش از آنکه چیزی نشان داده شود، از بازدیدکنندهٔ واردنشده گذرواژه خواسته می‌شود.',
+  'quire.share_check_failed': 'بازدیدکنندهٔ واردنشده هنوز نمی‌تواند این نشانی را باز کند.',
+  'quire.share_more': 'گزینه‌های بیشتر',
+  'quire.share_less': 'گزینه‌های کمتر',
+  'quire.share_password': 'گذرواژه',
+  'quire.share_password_hint':
+    'دست‌کم ۶ نویسه. پیش از آنکه خواننده چیزی ببیند — حتی فهرست صفحه‌ها — از او خواسته می‌شود.',
+  'quire.share_password_keep': 'برای نگه‌داشتن گذرواژهٔ کنونی، خالی بگذارید.',
+  'quire.share_password_on': 'گذرواژه تنظیم شده است',
+  'quire.share_password_remove': 'برداشتن گذرواژه',
+  'quire.share_expires': 'پایان کار در',
+  'quire.share_expires_hint': 'پس از این تاریخ پیوند باز نمی‌شود. خالی بگذارید تا هرگز منقضی نشود.',
+  'quire.share_indexable': 'موتورهای جست‌وجو آن را فهرست کنند',
+  'quire.share_indexable_desc':
+    'خاموش، از خزنده‌ها می‌خواهد کنارش بگذارند. «عمومی» و «یافتنی» دو خواستهٔ جدا هستند.',
+  'quire.share_seo_title': 'عنوان در نتایج جست‌وجو',
+  'quire.share_seo_title_hint': 'خالی، عنوان خودِ صفحه را می‌گیرد.',
+  'quire.share_seo_description': 'توضیح در نتایج جست‌وجو',
+  'quire.share_og_image': 'تصویر پیش‌نمایش پیوند',
+  'quire.share_og_image_hint': 'وقتی کسی پیوند را در گفت‌وگویی می‌چسباند دیده می‌شود. نشانی تصویر را بچسبانید.',
+  'quire.share_theme': 'پوسته',
+  'quire.share_theme_auto': 'پیروی از تنظیم خودِ خواننده',
+  'quire.share_theme_light': 'روشن',
+  'quire.share_theme_dark': 'تیره',
+  'quire.share_children': 'صفحه‌های درون این صفحه',
+  'quire.share_children_desc':
+    'یکی را خاموش کنید تا خودش و هر چه زیر اوست از هر سایت منتشرشده بیرون بماند: همین یکی و هر چه بعدها ساخته شود.',
+  'quire.share_children_none': 'چیزی زیر این صفحه نیست.',
+  'quire.share_children_off': 'تنها همین صفحه منتشر شده است، پس چیزی زیر آن عمومی نیست.',
+  'quire.share_child_private': 'خصوصی می‌ماند',
+  'quire.share_child_blocked': 'زیر صفحه‌ای که خصوصی مانده است',
+  'quire.share_child_draft': 'هرگز منتشر نشده',
+  'quire.share_child_archived': 'بایگانی‌شده',
+  'quire.share_save': 'ذخیرهٔ تغییرها',
+  'quire.share_saved': 'ذخیره شد',
+  'quire.share_unpublish': 'پایان انتشار',
+  'quire.share_unpublish_ask':
+    'سایت پایین آورده شود؟ پیوند برای همه از کار می‌افتد. چیزی از آنچه نوشته‌اید حذف نمی‌شود.',
+  'quire.share_unpublish_done': 'سایت پایین آورده شد',
+  'quire.share_done': 'تمام',
+  'quire.public_chip': 'عمومی',
+  'quire.public_chip_root': 'هر کس پیوند را داشته باشد این صفحه و هر چه زیر آن است را می‌خواند',
+  'quire.public_chip_child': 'این صفحه بخشی از سایتی منتشرشده است که همه می‌خوانند',
 }
 
 const tr: Record<string, Message> = {
@@ -2088,6 +2440,88 @@ const tr: Record<string, Message> = {
     one: '{n} kişi izliyor',
     other: '{n} kişi izliyor',
   },
+
+  'quire.share_web': 'Web’de yayımla',
+  'quire.share_title': 'Web’de yayımla',
+  'quire.share_warn_title': 'Bağlantıya sahip olan herkes, oturum açmadan okuyabilir',
+  'quire.share_warn_body':
+    'Yayımlamak bu sayfayı ve altındaki her sayfayı açık internete koyar. Hesap açmak da davet kabul etmek de gerekmez: adresi olan okur, adresi ondan alan da okur.',
+  'quire.share_warn_version':
+    'Okuyanlara yayımladığınız son sürüm gösterilir, yazmakta olduğunuz taslak değil.',
+  'quire.share_warn_unpublished':
+    'Hiç yayımlanmamış bir sayfa, yayımlanmış bir sayfanın altında olsa bile özel kalır.',
+  'quire.share_warn_search': 'Aşağıdan kapatmazsanız arama motorları listeleyebilir.',
+  'quire.share_needs_publish':
+    'Bu sayfanın henüz yayımlanmış bir sürümü yok, dolayısıyla sitenin gösterecek bir şeyi olmaz. Önce sayfayı yayımlayın.',
+  'quire.share_address': 'Adres',
+  'quire.share_address_hint': 'Küçük harf, rakam ve tire.',
+  'quire.share_address_invalid': '2 ile 64 arasında küçük harf, rakam veya tire.',
+  'quire.share_address_pending':
+    'Kaydettiğinizde site buraya taşınır. O ana kadar canlı bağlantı yukarıdakidir.',
+  'quire.share_link': 'Bağlantı',
+  'quire.share_copy': 'Bağlantıyı kopyala',
+  'quire.share_copied': 'Bağlantı kopyalandı',
+  'quire.share_copy_manually': 'Tarayıcı kopyalamadı. Bağlantıyı seçip elle kopyalayın.',
+  'quire.share_open': 'Yayımlanan siteyi aç',
+  'quire.share_include': 'Bu sayfanın altındaki sayfaları da yayımla',
+  'quire.share_include_desc': 'Kapalıyken yalnızca bu sayfa yayımlanır.',
+  'quire.share_count': {
+    one: 'Bu sayfanın altında {n} sayfa var',
+    other: 'Bu sayfanın altında {n} sayfa var',
+  },
+  'quire.share_publish': 'Web’de yayımla',
+  'quire.share_published': 'Bu sayfa herkese açık',
+  'quire.share_published_when': '{when} yayımlandı',
+  'quire.share_published_toast': 'Bu sayfa herkese açık. Bağlantısı olan herkes okuyabilir.',
+  'quire.share_check_running': 'Oturum açmamış bir ziyaretçinin ne gördüğü denetleniyor…',
+  'quire.share_check_ok': {
+    one: 'Oturum açmamış bir ziyaretçi {n} sayfa görüyor.',
+    other: 'Oturum açmamış bir ziyaretçi {n} sayfa görüyor.',
+  },
+  'quire.share_check_locked': 'Oturum açmamış bir ziyaretçiye hiçbir şey gösterilmeden önce parola sorulur.',
+  'quire.share_check_failed': 'Oturum açmamış bir ziyaretçi bu adresi henüz açamıyor.',
+  'quire.share_more': 'Daha fazla seçenek',
+  'quire.share_less': 'Daha az seçenek',
+  'quire.share_password': 'Parola',
+  'quire.share_password_hint':
+    'En az 6 karakter. Okuyana, sayfa listesi dâhil hiçbir şey gösterilmeden önce sorulur.',
+  'quire.share_password_keep': 'Mevcut parolayı korumak için boş bırakın.',
+  'quire.share_password_on': 'Bir parola tanımlı',
+  'quire.share_password_remove': 'Parolayı kaldır',
+  'quire.share_expires': 'Şu tarihte kapansın',
+  'quire.share_expires_hint': 'Bu tarihten sonra bağlantı açılmaz. Boş bırakırsanız hiç sona ermez.',
+  'quire.share_indexable': 'Arama motorları listeleyebilsin',
+  'quire.share_indexable_desc':
+    'Kapalıyken tarayıcı botlarından atlamaları istenir. Herkese açık olmak ile bulunabilir olmak aynı istek değildir.',
+  'quire.share_seo_title': 'Arama sonuçlarındaki başlık',
+  'quire.share_seo_title_hint': 'Boş bırakılırsa sayfanın kendi başlığı kullanılır.',
+  'quire.share_seo_description': 'Arama sonuçlarındaki açıklama',
+  'quire.share_og_image': 'Bağlantı önizleme görseli',
+  'quire.share_og_image_hint':
+    'Bağlantı bir sohbete yapıştırıldığında görünür. Görselin adresini yapıştırın.',
+  'quire.share_theme': 'Görünüm',
+  'quire.share_theme_auto': 'Okuyanın kendi ayarına uy',
+  'quire.share_theme_light': 'Açık',
+  'quire.share_theme_dark': 'Koyu',
+  'quire.share_children': 'Bu sayfanın içindeki sayfalar',
+  'quire.share_children_desc':
+    'Birini kapatınca o sayfa ve altındaki her şey, bu site de sonra kurulacaklar da dâhil hiçbir yayımlanmış siteye girmez.',
+  'quire.share_children_none': 'Bu sayfanın altında bir şey yok.',
+  'quire.share_children_off': 'Yalnızca bu sayfa yayımlandı, altındaki hiçbir şey herkese açık değil.',
+  'quire.share_child_private': 'Özel kalıyor',
+  'quire.share_child_blocked': 'Özel kalan bir sayfanın altında',
+  'quire.share_child_draft': 'Hiç yayımlanmadı',
+  'quire.share_child_archived': 'Arşivlendi',
+  'quire.share_save': 'Değişiklikleri kaydet',
+  'quire.share_saved': 'Kaydedildi',
+  'quire.share_unpublish': 'Yayımdan kaldır',
+  'quire.share_unpublish_ask':
+    'Site kapatılsın mı? Bağlantı herkes için çalışmaz olur. Yazdıklarınızdan hiçbiri silinmez.',
+  'quire.share_unpublish_done': 'Site kapatıldı',
+  'quire.share_done': 'Tamam',
+  'quire.public_chip': 'Herkese açık',
+  'quire.public_chip_root': 'Bağlantısı olan herkes bu sayfayı ve altındaki her şeyi okuyabilir',
+  'quire.public_chip_child': 'Bu sayfa, herkesin okuyabildiği yayımlanmış bir sitenin parçası',
 }
 
 /** In the shape `defineClientModule().messages` expects. */

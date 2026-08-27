@@ -19,7 +19,7 @@
  * declared.
  */
 import { randomUUID } from 'node:crypto'
-import type { Principal } from '@kernhq/contracts'
+import { ANONYMOUS, type Principal } from '@kernhq/contracts'
 import { createKernel, KernError, type Kernel, type RequestContext, type Tx } from '@kernhq/kernel'
 import { call } from '@orpc/server'
 import pg from 'pg'
@@ -150,6 +150,9 @@ const fixture = {
   // One each, for the same reason there are three comments: a procedure that wrongly succeeds must
   // not be able to make the next one fail with NOT_FOUND, which is not the refusal being asserted.
   labelToRemove: '',
+  publicationId: '',
+  publicationToRemove: '',
+  publicationSlug: 'handbook-site',
 }
 
 beforeAll(async () => {
@@ -270,6 +273,34 @@ beforeAll(async () => {
     run((tx) => svc.organisation.createLabel(tx, WS, space.id, { name, colour: 'accent' }))
   fixture.labelId = (await label('Draft')).id
   fixture.labelToRemove = (await label('Archive')).id
+
+  /*
+   * A real, servable published site, so the `check: 'public'` pass below compares two real answers
+   * rather than two identical 404s. Publishing renders the version, which is what makes the page
+   * public at all — see `publications.ts`.
+   */
+  await run(async (tx) => {
+    const published = await svc.versions.publish(tx, owner(), WS, page.id, 'live')
+    if (published.publishedVersionId)
+      await svc.publications.renderVersion(tx, WS, published.publishedVersionId)
+  })
+  const publication = (slug: string) =>
+    run((tx) =>
+      svc.publications.create(tx, owner(), WS, {
+        rootPageId: page.id,
+        slug,
+        includeDescendants: true,
+        password: null,
+        expiresAt: null,
+        seoTitle: '',
+        seoDescription: '',
+        ogImageUrl: null,
+        indexable: true,
+        theme: 'auto',
+      }),
+    )
+  fixture.publicationId = (await publication(fixture.publicationSlug)).id
+  fixture.publicationToRemove = (await publication('site-to-remove')).id
 }, 180_000)
 
 afterAll(async () => {
@@ -362,6 +393,24 @@ const inputFor = (): Record<string, Record<string, unknown>> => {
 
     'publishing.publish': { ...page, label: 'live' },
     'publishing.revert': page,
+
+    'publications.list': space,
+    'publications.get': { ...ws, publicationId: fixture.publicationId },
+    'publications.create': { ...ws, rootPageId: fixture.pageId, slug: 'smuggled-site' },
+    'publications.update': { ...ws, publicationId: fixture.publicationId, seoTitle: 'Renamed site' },
+    'publications.remove': { ...ws, publicationId: fixture.publicationToRemove },
+    'publications.optOut': { ...page, excluded: true },
+
+    // The public surface takes no id at all — a slug and a path, both of which name a place inside
+    // one publication or name nothing.
+    'public.site': { workspaceId: WS, slug: fixture.publicationSlug },
+    'public.page': { workspaceId: WS, slug: fixture.publicationSlug, path: '' },
+    'public.search': { workspaceId: WS, slug: fixture.publicationSlug, q: 'something' },
+    'public.sitemap': { workspaceId: WS, slug: fixture.publicationSlug },
+    'public.robots': { workspaceId: WS, slug: fixture.publicationSlug },
+    // The fixture publication has no password, so this is a door that is not there: NOT_FOUND, for
+    // an administrator and for a stranger alike, which is what the pass below compares.
+    'public.unlock': { workspaceId: WS, slug: fixture.publicationSlug, password: 'not-the-password' },
   }
 }
 
@@ -386,6 +435,13 @@ const denyOnPages = (userId: string, permissions: string[], pageIds: string[]) =
   )
 
 const codeOf = (err: unknown) => (err instanceof KernError ? err.code : `${(err as Error)?.name}`)
+
+/** What a call did, as one comparable value: the error code, or the body it answered with. */
+const outcomeOf = (name: string, input: Record<string, unknown>, who: Principal) =>
+  invoke(name, input, who).then(
+    (value) => ({ code: null as string | null, body: JSON.stringify(value) }),
+    (err) => ({ code: codeOf(err), body: '' }),
+  )
 
 describe('the reported bypass, exactly as it was reported', () => {
   it('stops an ordinary member with a space-scoped DENY from touching a database', async () => {
@@ -467,11 +523,49 @@ describe('every procedure that claims to check a page', () => {
 describe('every procedure in the contract', () => {
   const inputs = () => inputFor()
 
+  it('has a public site a stranger can really open, or the public pass proves nothing', async () => {
+    // Two identical 404s would satisfy the comparison in the sweep below without ever exercising a
+    // published page. This is the assertion that stops that pass going quietly vacuous.
+    const site = (await invoke('public.site', inputs()['public.site']!, ANONYMOUS)) as {
+      locked: boolean
+      site: { nav: unknown[] } | null
+    }
+    expect(site.locked).toBe(false)
+    expect(site.site?.nav.length ?? 0).toBeGreaterThan(0)
+  })
+
   for (const [name, authz] of Object.entries(quireProcedureAuthz)) {
     it(`${name} refuses somebody denied ${authz.permission}`, async () => {
       const who = principal(SWEEP, 'admin')
       const input = inputs()[name]
       expect(input, `${name} has no input in this file's fixture table`).toBeDefined()
+
+      /*
+       * A public procedure has no principal to refuse, so "does it refuse" is the wrong question
+       * and asking it would be vacuous. The question that matters is whether the principal changes
+       * anything: the only person who ever checks that a published site works is its author, signed
+       * in, and a surface that shows them more than it shows a stranger fails in exactly the
+       * situation where somebody is looking at it.
+       *
+       * So it is called twice — once as an administrator with the permission denied outright, once
+       * as a genuine anonymous request — and the two answers must be identical. That is what
+       * `anonymousOnly` in `_impl.ts` buys, and it is the only thing that keeps buying it.
+       */
+      if (authz.check === 'public') {
+        deny(SWEEP, [authz.permission], 'workspace', WS)
+        const asAuthor = await outcomeOf(name, input!, who)
+        bindings.clear()
+        const asStranger = await outcomeOf(name, input!, ANONYMOUS)
+
+        expect(asAuthor.code, `${name} answered FORBIDDEN on a surface with no principal`).not.toBe(
+          'FORBIDDEN',
+        )
+        expect(
+          asAuthor,
+          `${name} answered a signed-in author differently from a signed-out stranger`,
+        ).toEqual(asStranger)
+        return
+      }
 
       if (authz.check === 'workspace') {
         // Nothing narrower exists to bind to, so the workspace-level gate is the whole answer.

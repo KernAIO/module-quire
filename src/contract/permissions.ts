@@ -101,9 +101,25 @@ export const quirePermissions = definePermissions([
  *     scope yet: `spaces.create` has no space to be scoped to.
  *   - `filter` — a list that omits what you may not see rather than refusing. "You may not open it"
  *     is a worse answer than not showing it, and `spaces.list` is deliberately the second.
+ *   - `public` — there is no principal to ask about. See below.
+ *
+ * **`public` is the one that needs saying out loud.** Every other value here answers "which scope is
+ * this permission resolved at"; `public` answers "this procedure asks nobody anything", which is a
+ * different kind of statement and the only one in this module that can leak a customer's private
+ * pages to the internet. It is spelled as a value rather than an omission so that adding one is a
+ * line in a review instead of a missing entry nobody sees, and `authz.int.test.ts` treats it as its
+ * own case: it calls the procedure once as a principal denied everything and once as a genuine
+ * anonymous stranger, and fails unless the two answers are byte-for-byte identical. That is the
+ * property that matters — a public surface that quietly shows an author more than it shows a
+ * stranger is one whose author tests it and never sees what the world sees.
+ *
+ * `permission` is still required for a `public` entry, and it names the permission that had to be
+ * held to *create the grant* — `quire.page.publish`, the one somebody used to make the publication.
+ * It is not a check this procedure performs. `module.test.ts` holds every entry to a permission the
+ * module declares, and there is no honest way to write "none" that keeps the rest of that check.
  */
 export interface ProcedureAuthz {
-  check: 'page' | 'space' | 'workspace' | 'filter'
+  check: 'page' | 'space' | 'workspace' | 'filter' | 'public'
   permission: string
 }
 
@@ -191,4 +207,40 @@ export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
 
   'publishing.publish': { check: 'page', permission: 'quire.page.publish' },
   'publishing.revert': { check: 'page', permission: 'quire.page.edit' },
+
+  /*
+   * A publication hands a page's whole subtree to the internet, so the question every one of these
+   * asks is about the **root page** — not the space, and not the workspace. `quire.page.publish` is
+   * already the permission that decides which version readers are served; deciding that the readers
+   * include everybody is the same decision one step further.
+   *
+   * `list` is the exception and is space-scoped, because "what has this space published" has no one
+   * page to resolve against. It filters as well: a publication whose root page the caller may not
+   * read is not named in the answer, for the same reason `pages.trash` does not name a title.
+   *
+   * `optOut` is `quire.page.publish` rather than `quire.page.edit` on purpose. Marking a page
+   * "never public" is a publishing decision about who may read it, not a change to what it says —
+   * and the two permissions are held by different people in a space where writing is open and
+   * publishing is not.
+   */
+  'publications.list': { check: 'space', permission: 'quire.page.publish' },
+  'publications.get': { check: 'page', permission: 'quire.page.publish' },
+  'publications.create': { check: 'page', permission: 'quire.page.publish' },
+  'publications.update': { check: 'page', permission: 'quire.page.publish' },
+  'publications.remove': { check: 'page', permission: 'quire.page.publish' },
+  'publications.optOut': { check: 'page', permission: 'quire.page.publish' },
+
+  /*
+   * The signed-out surface. Nothing here asks a permission, because there is nobody to ask about —
+   * see the note on `check: 'public'` above. What stands in for the permission check is that every
+   * query is scoped by the **publication**: its root page, the descendants that survive the prune,
+   * `excluded_from_public` false and a rendered published version. Workspace scope is what
+   * row-level security gives, and workspace scope is not publication scope.
+   */
+  'public.site': { check: 'public', permission: 'quire.page.publish' },
+  'public.page': { check: 'public', permission: 'quire.page.publish' },
+  'public.search': { check: 'public', permission: 'quire.page.publish' },
+  'public.sitemap': { check: 'public', permission: 'quire.page.publish' },
+  'public.robots': { check: 'public', permission: 'quire.page.publish' },
+  'public.unlock': { check: 'public', permission: 'quire.page.publish' },
 }

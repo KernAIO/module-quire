@@ -14,6 +14,7 @@ import {
   relativeTime,
   Skeleton,
   session,
+  Tooltip,
   toast,
 } from '@kernhq/ui'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
@@ -24,11 +25,13 @@ import ConfirmDialog from '../components/ConfirmDialog.svelte'
 import FavoriteStar from '../components/FavoriteStar.svelte'
 import PageEditor from '../components/PageEditor.svelte'
 import PageLabels from '../components/PageLabels.svelte'
+import PublishDialog from '../components/PublishDialog.svelte'
 import VersionHistory from '../components/VersionHistory.svelte'
 import { type CoreApi, toPerson } from '../core-api.js'
 import DatabaseView from '../database/DatabaseView.svelte'
 import { t } from '../i18n.js'
 import { canQuire } from '../permissions.js'
+import { publicSiteUrl } from '../public-url.js'
 import { quireKeys } from '../query.js'
 
 /**
@@ -245,6 +248,73 @@ async function revert() {
     busy = false
   }
 }
+
+// -----------------------------------------------------------------------------------------------
+// Whether this page is on the internet
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * The share dialog owns publishing; this owns the one thing the *page* has to say about it.
+ *
+ * Both queries are gated on `quire.page.publish` because `publications.list` asks for it, and a
+ * query that is certain to be refused is a 403 in everybody else's network tab and an indicator
+ * that never appears either way. The consequence is worth stating plainly: **somebody who cannot
+ * publish does not see the "Public" chip.** That is the wrong way round for a reader who would
+ * like to know, and it is the only shape available until there is a procedure that answers "is this
+ * page public" without asking to publish it — a chip is not worth a new public surface.
+ */
+let shareOpen = $state(false)
+const canPublish = $derived(canQuire('pagePublish'))
+
+const publicationsQuery = createQuery(() => ({
+  queryKey: quireKeys.publications(workspaceId, doc?.spaceId ?? ''),
+  enabled: canPublish && Boolean(workspaceId && doc?.spaceId),
+  queryFn: () => api.publications.list({ workspaceId, spaceId: doc?.spaceId ?? '' }),
+}))
+
+/**
+ * The space's tree, only once something in it has been published.
+ *
+ * Same key as the sidebar's, so on a page reached through the sidebar this costs nothing at all;
+ * and a space with no published site never asks for it.
+ */
+const spaceTreeQuery = createQuery(() => ({
+  queryKey: quireKeys.tree(workspaceId, doc?.spaceId ?? ''),
+  enabled: canPublish && (publicationsQuery.data?.length ?? 0) > 0 && Boolean(workspaceId && doc?.spaceId),
+  queryFn: () => api.pages.tree({ workspaceId, spaceId: doc?.spaceId ?? '', includeArchived: false }),
+}))
+
+/**
+ * The publication a signed-out stranger could read *this* page through, or null.
+ *
+ * It reproduces the server's prune rather than asking whether the page is somewhere under a root:
+ * every page on the way up — this one, each ancestor, and the root itself — has to be a `page`,
+ * unarchived, not opted out and actually published, because that is exactly what the recursive walk
+ * behind `public.site` descends through. Getting this looser would put a "Public" chip on a page
+ * strangers cannot open, which is the mistake that teaches somebody the chip means nothing.
+ */
+const publicVia = $derived.by((): { slug: string; root: boolean } | null => {
+  const rows = publicationsQuery.data ?? []
+  const here = doc
+  if (!here || rows.length === 0) return null
+  if (here.kind !== 'page' || here.archivedAt || here.deletedAt || !here.publishedVersionId) return null
+  const nodes = spaceTreeQuery.data
+  const byId = new Map((nodes ?? []).map((node) => [node.id, node]))
+  for (const row of rows) {
+    if (row.rootPageId === here.id) return { slug: row.slug, root: true }
+    if (!row.includeDescendants || !nodes) continue
+    let at = byId.get(here.id)
+    let guard = 0
+    while (at && guard++ < 1000) {
+      if (at.kind !== 'page' || at.archivedAt || at.excludedFromPublic || !at.hasPublishedVersion) break
+      if (at.id === row.rootPageId) return { slug: row.slug, root: false }
+      at = at.parentId ? byId.get(at.parentId) : undefined
+    }
+  }
+  return null
+})
+
+const publicUrl = $derived(publicVia ? publicSiteUrl({ workspaceSlug, slug: publicVia.slug }) : '')
 
 // -----------------------------------------------------------------------------------------------
 // Watching, recording, and the way this page is deleted
@@ -503,6 +573,25 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
                 },
               ]
             : []),
+          /*
+           * Only a `page`, and only for somebody who may publish.
+           *
+           * A live doc and a database have no published version — `publishing.publish` refuses
+           * them — so a site rooted at one would serve nothing, and an entry that opens a dialog
+           * whose only outcome is an empty site is worse than an absent one. `page.publish` rather
+           * than `page.edit`, matching every procedure the dialog calls: in a space where writing
+           * is open and publishing is not, those are different people.
+           */
+          ...(doc.kind === 'page' && canPublish
+            ? [
+                {
+                  id: 'share-web',
+                  label: t('share_web'),
+                  icon: 'globe',
+                  onSelect: () => (shareOpen = true),
+                },
+              ]
+            : []),
           {
             id: 'watch',
             label: watching ? t('watch_stop') : t('watch'),
@@ -563,6 +652,30 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
           ? t('edited_ago_by', { when: relativeTime(doc.updatedAt), who: editor.name })
           : t('edited_ago', { when: relativeTime(doc.updatedAt) })}
       </span>
+      <!--
+        Quiet, and a link.
+
+        "This page is on the internet" is a fact about the page, so it sits with the other facts
+        under the title rather than as a banner — but it is the only one of them worth clicking,
+        because the useful thing to do with it is to go and look at what strangers actually see.
+        The sentence explaining it is a tooltip rather than the label: the label has to survive
+        being one chip in a row of them, and the explanation is a whole sentence.
+      -->
+      {#if publicVia}
+        <Tooltip text={publicVia.root ? t('public_chip_root') : t('public_chip_child')}>
+          {#snippet children(props: Record<string, unknown>)}
+            <a
+              class="chip public"
+              href={publicUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              {...props}
+            >
+              <Icon name="globe" size={12} /> {t('public_chip')}
+            </a>
+          {/snippet}
+        </Tooltip>
+      {/if}
       {#if doc.kind === 'live'}
         <span class="chip"><Icon name="square-pen" size={12} /> {t('kind_live')}</span>
       {/if}
@@ -642,6 +755,14 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
     publishedVersionId={doc.publishedVersionId}
   />
 
+  <PublishDialog
+    bind:open={shareOpen}
+    {workspaceId}
+    {workspaceSlug}
+    spaceId={doc.spaceId}
+    page={doc}
+  />
+
   <!--
     The body says nothing about numbers until it knows them. Naming a count before the tree has
     loaded would be the same silent lie in a smaller size — "it goes to the trash" for a page that
@@ -711,6 +832,24 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+/*
+ * The one chip that is a control, so it is the one that reads as one — a tinted pill with a hit
+ * area a finger can find. `--kern-accent-text` rather than `--kern-accent`: the flat accent is a
+ * fill colour and does not clear 4.5:1 as text on its own tint in either theme.
+ */
+.chip.public {
+  gap: 5px;
+  min-height: 22px;
+  padding-inline: 8px;
+  border-radius: var(--kern-r-full);
+  background: var(--kern-accent-tint);
+  color: var(--kern-accent-text);
+  font-weight: 500;
+  text-decoration: none;
+}
+.chip.public:hover {
+  background: var(--kern-accent-tint-2);
 }
 .body {
   margin-block-start: 22px;

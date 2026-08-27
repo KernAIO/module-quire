@@ -36,6 +36,14 @@ export {
   type PageKind,
   type PageNode,
   type PageVersion,
+  type Publication,
+  type PublicationTheme,
+  type PublicBreadcrumb,
+  type PublicNavEntry,
+  type PublicPage,
+  type PublicSearchHit,
+  type PublicSite,
+  type PublicSiteDetail,
   quirePermissions,
   type RecentEntry,
   type RecentView,
@@ -120,3 +128,16 @@ export { __setQuireApi, getQuireApi } from './api-instance.js'
 export { type QuireMessageKey, quireMessageBundles, t } from './i18n.js'
 export { quireClientModule, quireClientModule as default } from './module.js'
 export { canQuire, QUIRE_PERMISSIONS, type QuirePermission } from './permissions.js'
+/**
+ * Where a published site lives.
+ *
+ * Exported for the same reason `pageDocumentName` above is: the module owns the naming of its own
+ * objects, and this is the only definition of a publication's address. Whatever ends up rendering a
+ * published page reads it from here rather than writing the prefix out again.
+ */
+export {
+  PUBLIC_SITE_PREFIX,
+  type PublicSiteAddress,
+  publicSiteBasePath,
+  publicSiteUrl,
+} from './public-url.js'

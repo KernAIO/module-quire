@@ -140,6 +140,8 @@ export function quirePages(access: QuireAccess) {
           title: pages.title,
           icon: pages.icon,
           archivedAt: pages.archivedAt,
+          excludedFromPublic: pages.excludedFromPublic,
+          publishedVersionId: pages.publishedVersionId,
         })
         .from(pages)
         .where(
@@ -172,6 +174,10 @@ export function quirePages(access: QuireAccess) {
         icon: r.icon,
         hasChildren: withChildren.has(r.id),
         archivedAt: r.archivedAt?.toISOString() ?? null,
+        excludedFromPublic: r.excludedFromPublic,
+        // The boolean, never the id: a tree row goes to every member who can open the space, and
+        // the id is what `versions.get` takes.
+        hasPublishedVersion: r.publishedVersionId !== null,
       }))
     },
 

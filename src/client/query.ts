@@ -38,6 +38,22 @@ export const quireKeys = {
   recents: (workspaceId: string) => ['quire', 'recent', workspaceId] as const,
   watchers: (workspaceId: string, pageId: string) => ['quire', 'watcher', workspaceId, pageId] as const,
 
+  /**
+   * Who has published what.
+   *
+   * `publication` is the entity `publications.create|update|remove` announce, so every screen
+   * holding one of these keys redraws when somebody else publishes or takes a site down — which
+   * matters more here than anywhere else in the module, because the thing that changed is whether
+   * strangers can read a page.
+   *
+   * `site` is under the same entity on purpose. It is the *anonymous* read of a published site —
+   * what the share dialog checks the URL against — and it is stale the instant the publication
+   * changes, so it must be invalidated by the same announcement rather than by remembering to.
+   */
+  publications: (workspaceId: string, spaceId: string) =>
+    ['quire', 'publication', workspaceId, spaceId] as const,
+  site: (workspaceId: string, slug: string) => ['quire', 'publication', workspaceId, 'site', slug] as const,
+
   /** the schema — properties and views — which every open tab of a database is drawing */
   database: (workspaceId: string, databaseId: string) =>
     ['quire', 'database', workspaceId, databaseId] as const,

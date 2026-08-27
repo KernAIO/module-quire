@@ -1,8 +1,10 @@
+import { ANONYMOUS } from '@kernhq/contracts'
 import {
   defineModule,
   defineServerModule,
   KernError,
   type Kernel,
+  o,
   packageVersion,
   type RequestContext,
   requires,
@@ -10,11 +12,13 @@ import {
   workspaceScoped,
 } from '@kernhq/kernel'
 import { implement } from '@orpc/server'
+import type { Publication, PublicBreadcrumb } from '../contract/index.js'
 import { MODULE_ID, quireContract, quireEvents } from '../contract/index.js'
 import { toComment } from './services/comments.js'
 import { quireServices } from './services/index.js'
 import { createNotify } from './services/notify.js'
 import { documentNameOf, toPage } from './services/pages.js'
+import { type PublicNode, toPublication } from './services/publications.js'
 import { toVersion } from './services/versions.js'
 
 /**
@@ -29,8 +33,45 @@ export { defineModule, defineServerModule, packageVersion }
 
 const os = implement(quireContract).$context<RequestContext>()
 
+/**
+ * The anonymous counterpart of `workspaceScoped`, for the `public.*` surface and nothing else.
+ *
+ * `workspaceScoped` rejects an anonymous principal outright, which is exactly right for every other
+ * procedure in this module and impossible for these six. What is still worth keeping from it is the
+ * module switch: a workspace that has turned Quire off must not keep serving its published sites,
+ * and the answer is **404 rather than `MODULE_DISABLED`**, because a signed-out stranger asking for
+ * a URL is owed "there is nothing here" and not "there is something here that this customer has
+ * switched off". The one thing it must not do is `requireMember`.
+ */
+const publicSurface = o.middleware(async ({ context, next }, input) => {
+  const { workspaceId } = input as { workspaceId?: unknown }
+  if (typeof workspaceId !== 'string' || workspaceId.length === 0)
+    throw new KernError('NOT_FOUND', 'There is no published site at this address')
+  if (!(await context.kernel.isModuleEnabled(workspaceId, MODULE_ID)))
+    throw new KernError('NOT_FOUND', 'There is no published site at this address')
+  return next()
+})
+
+/**
+ * Serve a public procedure to its author exactly as it is served to a stranger.
+ *
+ * The principal is replaced, not merely ignored. A signed-in author opening their own published URL
+ * is the *only* person who ever checks whether a public site works, so a handler that could quietly
+ * consult `context.principal` would show them a site nobody else can see — and the failure is
+ * invisible in exactly the situation where somebody is looking for it. With the principal gone
+ * there is nothing to consult: `userId` is null, there are no memberships, and any permission
+ * question a future handler asked would be answered for a stranger.
+ *
+ * `authz.int.test.ts` asserts the consequence rather than the mechanism — every `check: 'public'`
+ * procedure must answer a denied administrator and an anonymous request identically.
+ */
+const anonymousOnly = o.middleware(({ context, next }) =>
+  next({ context: { ...context, principal: ANONYMOUS } }),
+)
+
 export function implement_(kernel: Kernel) {
   const scoped = os.use(workspaceScoped(MODULE_ID))
+  const open = os.use(publicSurface).use(anonymousOnly)
   const svc = quireServices(kernel)
   const notify = createNotify(kernel)
 
@@ -963,7 +1004,24 @@ export function implement_(kernel: Kernel) {
           const row = await run(context, input.workspaceId, async (tx) => {
             const scope = await svc.access.scopeOf(tx, input.workspaceId, input.pageId)
             await svc.access.requirePage(context.principal, 'quire.page.publish', input.workspaceId, scope)
-            return svc.versions.publish(tx, context.principal, input.workspaceId, input.pageId, input.label)
+            const updated = await svc.versions.publish(
+              tx,
+              context.principal,
+              input.workspaceId,
+              input.pageId,
+              input.label,
+            )
+            /*
+             * Draw the version now, while there is a principal and a writable transaction.
+             *
+             * A version is immutable, so every rendering of it is identical — and the public path
+             * is read-only and has nobody to sign a picture on behalf of. Doing it here is what
+             * makes an anonymous read a single indexed row read instead of a CRDT decode, and it is
+             * why `page_versions.html` exists at all.
+             */
+            if (updated.publishedVersionId)
+              await svc.publications.renderVersion(tx, input.workspaceId, updated.publishedVersionId)
+            return updated
           })
           await kernel.emit(
             quireEvents.pagePublished,
@@ -991,5 +1049,256 @@ export function implement_(kernel: Kernel) {
           return toPage(row)
         }),
     },
+
+    /**
+     * Publishing to the internet, from the inside.
+     *
+     * Every one of these asks `quire.page.publish` about the publication's **root page**, because
+     * the root is the page whose whole subtree is being handed out. A publication id carries no
+     * scope of its own, so the row is read first and the question is asked about what it points at
+     * — the same shape as a `databases.*` procedure resolving its host page.
+     */
+    publications: {
+      list: scoped.publications.list.use(requires('quire.page.publish')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+          await svc.access.requireSpace(
+            context.principal,
+            'quire.page.publish',
+            input.workspaceId,
+            input.spaceId,
+          )
+          /*
+           * Filtered as well as gated, for the reason `pages.trash` is: the procedure is reached by
+           * being allowed to publish *somewhere* in the space, and a publication names a root page
+           * — so an unfiltered row would hand its slug and its root's existence to somebody a
+           * page-scoped DENY has closed that page to.
+           */
+          const rows = await svc.publications.list(tx, input.workspaceId, input.spaceId)
+          const kept: Publication[] = []
+          for (const row of rows) {
+            const scope = await svc.access.scopeOf(tx, input.workspaceId, row.rootPageId).catch(() => null)
+            if (!scope) continue
+            if (await svc.access.canPage(context.principal, 'quire.page.publish', input.workspaceId, scope))
+              kept.push(toPublication(row))
+          }
+          return kept
+        }),
+      ),
+
+      get: scoped.publications.get.use(requires('quire.page.publish')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const row = await svc.publications.row(tx, input.workspaceId, input.publicationId)
+          await requirePage(tx, context, input.workspaceId, row.rootPageId, 'quire.page.publish')
+          return toPublication(row)
+        }),
+      ),
+
+      create: scoped.publications.create
+        .use(requires('quire.page.publish'))
+        .handler(async ({ input, context }) => {
+          const row = await run(context, input.workspaceId, async (tx) => {
+            await requirePage(tx, context, input.workspaceId, input.rootPageId, 'quire.page.publish')
+            const created = await svc.publications.create(tx, context.principal, input.workspaceId, input)
+            // Only ever does anything for pages published before this feature existed; a publish
+            // since then rendered its own HTML. Bounded, and a shortfall is a log line rather than a
+            // failed request — see `backfill`.
+            await svc.publications.backfill(tx, input.workspaceId, created)
+            return created
+          })
+          await announce(input.workspaceId, 'publication', row.id, 'created')
+          return toPublication(row)
+        }),
+
+      update: scoped.publications.update
+        .use(requires('quire.page.publish'))
+        .handler(async ({ input, context }) => {
+          const { workspaceId, publicationId, ...patch } = input
+          const row = await run(context, workspaceId, async (tx) => {
+            const existing = await svc.publications.row(tx, workspaceId, publicationId)
+            await requirePage(tx, context, workspaceId, existing.rootPageId, 'quire.page.publish')
+            const updated = await svc.publications.update(tx, workspaceId, publicationId, patch)
+            await svc.publications.backfill(tx, workspaceId, updated)
+            return updated
+          })
+          await announce(workspaceId, 'publication', row.id, 'updated')
+          return toPublication(row)
+        }),
+
+      remove: scoped.publications.remove
+        .use(requires('quire.page.publish'))
+        .handler(async ({ input, context }) => {
+          await run(context, input.workspaceId, async (tx) => {
+            const existing = await svc.publications.row(tx, input.workspaceId, input.publicationId)
+            await requirePage(tx, context, input.workspaceId, existing.rootPageId, 'quire.page.publish')
+            await svc.publications.remove(tx, input.workspaceId, input.publicationId)
+          })
+          await announce(input.workspaceId, 'publication', input.publicationId, 'deleted')
+          return { ok: true as const }
+        }),
+
+      optOut: scoped.publications.optOut
+        .use(requires('quire.page.publish'))
+        .handler(async ({ input, context }) => {
+          const excluded = await run(context, input.workspaceId, async (tx) => {
+            await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.publish')
+            return svc.publications.setExcluded(tx, input.workspaceId, input.pageId, input.excluded)
+          })
+          await announce(input.workspaceId, 'page', input.pageId, 'updated')
+          return { pageId: input.pageId, excluded }
+        }),
+    },
+
+    /**
+     * The signed-out surface.
+     *
+     * Every handler here has the same three lines at the top and they are the whole security model:
+     * resolve the **publication** from the slug (which fails closed on a slug nobody has taken and
+     * on one that has expired), check the door, and then walk the tree *from the publication's
+     * root*. Nothing is looked up by an id a caller supplied, because nothing here takes one — so
+     * "guessing a sibling id" is not a request this API can express.
+     *
+     * `open` is `publicSurface` + `anonymousOnly`: no membership check, no permission check, and no
+     * principal to accidentally consult. Reads run in `svc.publications.read`, which is a read-only
+     * transaction, so a write that slipped in here fails in Postgres rather than in a review.
+     */
+    public: {
+      site: open.public.site.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+          const theme = pub.theme as Publication['theme']
+          if (!(await svc.publications.unlocked(pub, input.token)))
+            return { slug: pub.slug, theme, locked: true, site: null }
+
+          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          // No root means the root page is archived, trashed, opted out, unpublished or not a page.
+          // The publication row survives that; the site does not.
+          const root = nodes[0]
+          if (!root) throw new KernError('NOT_FOUND', 'There is no published site at this address')
+          const newest = nodes.reduce(
+            (at, node) => Math.max(at, node.published_at.getTime()),
+            root.published_at.getTime(),
+          )
+          return {
+            slug: pub.slug,
+            theme,
+            locked: false,
+            site: {
+              title: pub.seoTitle || root.title || 'Untitled',
+              description: pub.seoDescription,
+              ogImageUrl: pub.ogImageUrl,
+              indexable: pub.indexable,
+              updatedAt: new Date(newest).toISOString(),
+              nav: nodes.map((node) => ({
+                path: node.path,
+                parentPath: node.parentPath,
+                title: node.title || 'Untitled',
+                icon: node.icon,
+              })),
+            },
+          }
+        }),
+      ),
+
+      page: open.public.page.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+          if (!(await svc.publications.unlocked(pub, input.token)))
+            throw new KernError('NOT_FOUND', 'There is no published page at this address')
+
+          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const node = svc.publications.find(nodes, input.path)
+          return {
+            path: node.path,
+            title: node.title || 'Untitled',
+            icon: node.icon,
+            coverUrl: node.cover_url,
+            html: await svc.publications.html(tx, input.workspaceId, node, nodes, input.basePath),
+            /*
+             * The version's timestamp, not the page's. `pages.updated_at` moves every time somebody
+             * types in the draft, so publishing it would tell the internet when an unpublished
+             * change was being worked on.
+             */
+            publishedAt: node.published_at.toISOString(),
+            etag: svc.publications.etagFor(node.version_id),
+            breadcrumbs: trailTo(nodes, node),
+          }
+        }),
+      ),
+
+      search: open.public.search.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+          if (!(await svc.publications.unlocked(pub, input.token)))
+            throw new KernError('NOT_FOUND', 'There is no published site at this address')
+          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const hits = await svc.publications.search(tx, input.workspaceId, nodes, input.q, input.limit)
+          return {
+            items: hits.map((hit) => ({
+              path: hit.node.path,
+              title: hit.node.title || 'Untitled',
+              snippet: hit.snippet,
+            })),
+          }
+        }),
+      ),
+
+      sitemap: open.public.sitemap.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+          // A sitemap exists for crawlers, so a site nobody is meant to crawl has an empty one
+          // rather than a private one. Answering with the tree here would put every path of a
+          // password-protected handbook in a file whose whole purpose is to be fetched by robots.
+          if (pub.passwordHash || !pub.indexable) return { entries: [] }
+          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          return {
+            entries: nodes.map((node) => ({
+              path: node.path,
+              lastModified: node.published_at.toISOString(),
+            })),
+          }
+        }),
+      ),
+
+      robots: open.public.robots.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          // The one place a missing publication is not an error: a crawler asking about a slug
+          // nobody has taken, one that has expired, and one behind a password have to get the same
+          // answer, or this becomes the oracle every other procedure refuses to be.
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug).catch(() => null)
+          if (!pub || pub.passwordHash || !pub.indexable) return { indexable: false, sitemapPath: null }
+          // Relative to whatever prefix the route layer serves this site under; the module has no
+          // way to know that, and guessing would put a wrong absolute URL in a robots file.
+          return { indexable: true, sitemapPath: 'sitemap.xml' }
+        }),
+      ),
+
+      unlock: open.public.unlock.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+          // A site with no password has no door to open, and saying so would confirm the slug
+          // exists to somebody who has not been told anything else about it.
+          if (!pub.passwordHash)
+            throw new KernError('NOT_FOUND', 'There is no published site at this address')
+          if (!(await svc.publications.checkPassword(pub, input.password)))
+            throw new KernError('UNAUTHORIZED', 'That password does not open this site')
+          return svc.publications.mintToken(pub)
+        }),
+      ),
+    },
   })
+}
+
+/** The path from the front page down to this page's parent, for a breadcrumb trail. */
+function trailTo(nodes: PublicNode[], node: PublicNode): PublicBreadcrumb[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const trail: PublicBreadcrumb[] = []
+  const seen = new Set([node.id])
+  let at = node.parent_id === null ? null : (byId.get(node.parent_id) ?? null)
+  while (at && !seen.has(at.id)) {
+    seen.add(at.id)
+    trail.push({ path: at.path, title: at.title || 'Untitled' })
+    at = at.parent_id === null ? null : (byId.get(at.parent_id) ?? null)
+  }
+  return trail.reverse()
 }

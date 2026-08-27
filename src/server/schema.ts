@@ -111,6 +111,18 @@ export const pages = schema.table(
     props: jsonObject('props'),
     /** What the server worked out from `props` — formulas and rollups — so a view can sort by one. */
     computed: jsonObject('computed'),
+    /**
+     * "Never public", travelling with the page rather than with a publication.
+     *
+     * A `publication_exclusions` join table would be per-publication and more precise, and it fails
+     * the wrong way: an exclusion written against one publication does nothing about a publication
+     * created later above the same page, so publishing a new root silently re-exposes it. A column
+     * holds against publications that do not exist yet, and the public tree walk reads it from the
+     * row it already has instead of remembering an anti-join on the one surface where a forgotten
+     * join is a leak. The cost is that a page cannot be public in one publication and private in
+     * another; a table can be added beside this later, with the column keeping the absolute meaning.
+     */
+    excludedFromPublic: boolean('excluded_from_public').notNull().default(false),
     createdBy: uuid('created_by'),
     updatedBy: uuid('updated_by'),
     createdAt: ts('created_at').notNull().defaultNow(),
@@ -156,6 +168,19 @@ export const pageVersions = schema.table(
     snapshot: bytea('snapshot'),
     /** flattened prose, so a version list can show a line of it without decoding the CRDT */
     text: text('text').notNull().default(''),
+    /**
+     * The version rendered to HTML once, at publish time, so a public read is a row read.
+     *
+     * `versions.html` renders the Y.Doc through the Tiptap schema on every call — right for a
+     * signed-in reader paging through history, wrong for an endpoint an anonymous crawler hits,
+     * because a version is immutable and the work is identical every time. This is what makes a
+     * published page a single indexed read and what lets the response be cached by version id.
+     *
+     * Null, not `''`, for every version written before this column existed: an empty string would
+     * claim the version renders to nothing. A publication whose pinned version has no HTML is not
+     * servable, which is the same rule as a page with no published version not being public.
+     */
+    html: text('html'),
     size: integer('size').notNull().default(0),
     authorId: uuid('author_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
@@ -440,6 +465,71 @@ export const watchers = schema.table(
   ],
 )
 
+/**
+ * A page, and everything under it, at a URL a signed-out stranger can open.
+ *
+ * The row *is* the grant: no publication, no public page, and deleting the row takes the site down.
+ * What it points at is a root page and the pinned published version of each page beneath it —
+ * `pages.published_version_id` and the HTML on that version, never the Y.Doc and never the draft.
+ *
+ * **How an anonymous request reaches this table at all** is the question the table exists to answer,
+ * and `migrations/0008_publications.sql` answers it at length. In short: *anonymous* means no
+ * principal, not no tenant. The public URL is workspace-qualified, the handler resolves the
+ * workspace before it touches `mod_quire`, and the policy below is the plain workspace policy every
+ * other table has. Nothing about the public path is special at the RLS layer — which is the point,
+ * because a surface with no principal is the last place to invent a second isolation mechanism. If
+ * the workspace is ever missed, `withWorkspace(null, …)` sets the setting to `''`, no `workspace_id`
+ * is ever `''`, and the query returns nothing rather than everything.
+ *
+ * Two rules the type system cannot hold: the public path runs in a `READ ONLY` transaction (once the
+ * workspace is set, RLS is no longer a fence around an anonymous request), and every query on it
+ * carries the publication in its own `WHERE` — root page, descendants, `excludedFromPublic` false,
+ * a published version present. Workspace scope is not publication scope.
+ */
+export const publications = schema.table(
+  'publications',
+  {
+    id: id(),
+    workspaceId: ws(),
+    /** the page the site is rooted at; its own published version is the front page */
+    rootPageId: uuid('root_page_id').notNull(),
+    /** false publishes exactly one page, which is what a single shared document wants */
+    includeDescendants: boolean('include_descendants').notNull().default(true),
+    /**
+     * The URL segment. Unique per workspace and not beyond it — the workspace is in the public URL,
+     * so two customers both wanting `handbook` is not a collision, and an instance-wide namespace
+     * would let whoever published first take the word from everyone else.
+     */
+    slug: text('slug').notNull(),
+    /**
+     * A PHC string (`$argon2id$…`), or null for a site anybody may read.
+     *
+     * RLS is row-level, so this column sits inside every row the workspace can read — including on
+     * the public path, once the handler has set the workspace. Select it into the verification step
+     * and nowhere else: never into a response body, an event payload or a log line.
+     */
+    passwordHash: text('password_hash'),
+    /** null never expires; past means the URL is gone, checked on the request, not by a sweep */
+    expiresAt: ts('expires_at'),
+    /** what a search result and a link preview say; empty falls back to the root page's own title */
+    seoTitle: text('seo_title').notNull().default(''),
+    seoDescription: text('seo_description').notNull().default(''),
+    ogImageUrl: text('og_image_url'),
+    /** false sends `noindex`. Public and findable are different requests, and people mean both. */
+    indexable: boolean('indexable').notNull().default(true),
+    /** `auto` follows the reader's own setting; `light` and `dark` pin it */
+    theme: text('theme').notNull().default('auto'),
+    createdBy: uuid('created_by'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('publications_ws_slug_uq').on(t.workspaceId, t.slug),
+    index('publications_ws_root_idx').on(t.workspaceId, t.rootPageId),
+    index('publications_ws_created_idx').on(t.workspaceId, t.createdAt),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
 export const TENANT_TABLES = [
   'spaces',
@@ -455,4 +545,5 @@ export const TENANT_TABLES = [
   'favorites',
   'recent_views',
   'watchers',
+  'publications',
 ] as const

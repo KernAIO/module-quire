@@ -17,6 +17,7 @@ import {
   toast,
 } from '@kernhq/ui'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { untrack } from 'svelte'
 import { getQuireApi } from '../api-instance.js'
 import CommentsPanel from '../components/CommentsPanel.svelte'
 import ConfirmDialog from '../components/ConfirmDialog.svelte'
@@ -148,18 +149,68 @@ $effect(() => {
   dirty = false
 })
 
+/**
+ * The title saves as you type, not only when you leave the field.
+ *
+ * It used to save on `blur` alone, and nothing else — so typing a name and then going somewhere
+ * without blurring first (a keyboard shortcut, ⌘K, closing the tab, any programmatic navigation)
+ * threw the name away and left the page called "Untitled" for ever. Measured against the live
+ * stack: fifteen seconds after typing, `mod_quire.pages.title` was still `''`; it only ever became
+ * the typed value on blur.
+ *
+ * A page's *body* has never had this problem, because it is a Y.Doc the collab service persists on
+ * its own schedule. The title is not — it is a plain column behind `pages.update` — so the schedule
+ * has to be written here. `docs/adr/0006` says the title should live in the Y.Doc beside the body
+ * for exactly this reason, and because two people renaming at once currently clobber each other;
+ * that is a larger change and this is not a substitute for it.
+ */
+const TITLE_SAVE_AFTER_MS = 700
+let titleTimer: ReturnType<typeof setTimeout> | null = null
+/* Set in the same tick as the call, because `isPending` arrives a render late and two saves would
+   race to write the same column in an order neither of them chose. */
+let savingTitle = false
+
+function queueTitleSave() {
+  if (titleTimer) clearTimeout(titleTimer)
+  titleTimer = setTimeout(() => {
+    titleTimer = null
+    void saveTitle()
+  }, TITLE_SAVE_AFTER_MS)
+}
+
 async function saveTitle() {
-  if (!doc || !dirty) return
+  if (titleTimer) {
+    clearTimeout(titleTimer)
+    titleTimer = null
+  }
+  if (!doc || !dirty || savingTitle) return
   const next = title.trim()
   if (next === doc.title) {
     dirty = false
     return
   }
-  await api.pages.update({ workspaceId, pageId, title: next })
-  dirty = false
-  await client.invalidateQueries({ queryKey: quireKeys.page(workspaceId, pageId) })
-  await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, doc.spaceId) })
+  savingTitle = true
+  try {
+    await api.pages.update({ workspaceId, pageId, title: next })
+    dirty = false
+    await client.invalidateQueries({ queryKey: quireKeys.page(workspaceId, pageId) })
+    await client.invalidateQueries({ queryKey: quireKeys.tree(workspaceId, doc.spaceId) })
+  } finally {
+    savingTitle = false
+  }
 }
+
+/* Leaving the page mid-word must not lose the word. */
+$effect(() => {
+  void pageId
+  return () => {
+    if (titleTimer) {
+      clearTimeout(titleTimer)
+      titleTimer = null
+    }
+    if (untrack(() => dirty)) void saveTitle()
+  }
+})
 
 async function archive(archived: boolean) {
   if (!doc) return
@@ -402,6 +453,7 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
             oninput={(e) => {
               title = (e.currentTarget as HTMLInputElement).value
               dirty = true
+              queueTitleSave()
             }}
             onblur={saveTitle}
             onkeydown={(e) => {

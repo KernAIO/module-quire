@@ -22,6 +22,7 @@
  * roles are superusers and a policy proves nothing against a superuser.
  */
 import { randomUUID } from 'node:crypto'
+import { Readable } from 'node:stream'
 import { ANONYMOUS, type Principal } from '@kernhq/contracts'
 import { createKernel, KernError, type Kernel, type RequestContext, type Tx } from '@kernhq/kernel'
 import { call } from '@orpc/server'
@@ -132,6 +133,38 @@ function registerStubs(k: Kernel) {
     'authz.customRolePermissions': { handler: async () => [] },
     'authz.bindings': { handler: async () => [] },
     'settings.getModule': { handler: async () => ({}) },
+    'files.get': {
+      handler: async (input: { id: string }) =>
+        input.id === FILE_ID || input.id === UNUSED_FILE_ID
+          ? {
+              id: input.id,
+              key: `ws/${WS_A}/quire/2026/08/${input.id}/office-plan.png`,
+              mimeType: 'image/png',
+            }
+          : null,
+    },
+  })
+}
+
+/**
+ * A file store that holds exactly the fixture's picture.
+ *
+ * Standing in for S3 rather than running one: what is under test is which references resolve and
+ * which do not, and every one of those decisions is made before a byte is read. The bytes matter
+ * only so that "it served the picture" is distinguishable from "it served nothing".
+ */
+function stubStorage(k: Kernel) {
+  const known = new Set([
+    `ws/${WS_A}/quire/2026/08/${FILE_ID}/office-plan.png`,
+    `ws/${WS_A}/quire/2026/08/${UNUSED_FILE_ID}/office-plan.png`,
+  ])
+  Object.assign(k.storage, {
+    head: async (key: string) =>
+      known.has(key) ? { contentLength: PICTURE.length, contentType: 'image/png' } : null,
+    get: async (key: string) => {
+      if (!known.has(key)) throw new Error('no such object')
+      return { body: Readable.from([PICTURE]), contentType: 'image/png', contentLength: PICTURE.length }
+    },
   })
 }
 
@@ -182,7 +215,12 @@ const fx = {
   otherWorkspacePage: '',
   /** the page whose HTML carries the mentions the scrub has to deal with */
   mentions: '',
+  /** the page whose HTML carries a picture reference and a signed URL left over from 0.12.0 */
+  pictured: '',
+  /** the root of a publication that was gutted after the fact: the row survives, the site does not */
+  guttedRoot: '',
   publicationId: '',
+  guttedPublicationId: '',
   lockedPublicationId: '',
   expiredPublicationId: '',
   otherWorkspacePublicationId: '',
@@ -192,7 +230,26 @@ const fx = {
 const SLUG = 'handbook'
 const LOCKED_SLUG = 'locked-handbook'
 const EXPIRED_SLUG = 'expired-handbook'
+const GUTTED_SLUG = 'gutted-handbook'
 const PASSWORD = 'a-long-enough-password'
+
+/**
+ * A picture on a published page, and one that was drawn before there was a safe way to draw one.
+ *
+ * `FILE_ID` is referenced by the published version, so it is servable. `UNUSED_FILE_ID` is a real
+ * file in the same workspace that no published page mentions, which is the case that proves the
+ * reference is not a bearer token for the whole file store. `LEGACY_SIGNED` is the exact shape
+ * 0.12.0 stored: the object key, carrying the workspace and file uuids, with an hour on it.
+ */
+const FILE_ID = '01920000-0000-7000-8000-0000000000bb'
+const UNUSED_FILE_ID = '01920000-0000-7000-8000-0000000000cc'
+const LEGACY_FILE_ID = '01920000-0000-7000-8000-0000000000dd'
+const PICTURE = Buffer.from('bytes that stand in for a png')
+/** Mirrors `UNLOCK_ATTEMPTS` in the service; a fence nobody can state a number for is not a fence. */
+const UNLOCK_ATTEMPTS_EXPECTED = 10
+const legacySignedUrl = (workspaceId: string, fileId: string) =>
+  `http://localhost:9000/kern/ws/${workspaceId}/quire/2026/08/${fileId}/office-plan.png` +
+  '?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Expires=3600&amp;X-Amz-Signature=deadbeef'
 
 const page = (over: Record<string, unknown> & { spaceId: string }) =>
   kernel.database.withWorkspace(
@@ -277,6 +334,7 @@ beforeAll(async () => {
     },
   })
   registerStubs(kernel)
+  stubStorage(kernel)
   await kernel.start()
   svc = quireServices(kernel)
   router = implement_(kernel)
@@ -306,6 +364,8 @@ beforeAll(async () => {
   fx.child = (await page({ spaceId: space.id, parentId: fx.root, title: 'Getting started' })).id
   fx.grandchild = (await page({ spaceId: space.id, parentId: fx.child, title: 'Installing' })).id
   fx.mentions = (await page({ spaceId: space.id, parentId: fx.root, title: 'Links' })).id
+  fx.pictured = (await page({ spaceId: space.id, parentId: fx.root, title: 'Office' })).id
+  fx.guttedRoot = (await page({ spaceId: space.id, title: 'Gutted' })).id
   fx.excluded = (await page({ spaceId: space.id, parentId: fx.root, title: 'Salaries' })).id
   fx.excludedChild = (await page({ spaceId: space.id, parentId: fx.excluded, title: 'Band 5' })).id
   fx.archived = (await page({ spaceId: space.id, parentId: fx.root, title: 'Old policy' })).id
@@ -320,6 +380,9 @@ beforeAll(async () => {
   const childVersion = await publish(fx.child)
   await publish(fx.grandchild)
   const mentionsVersion = await publish(fx.mentions)
+  const picturedVersion = await publish(fx.pictured)
+  const guttedVersion = await publish(fx.guttedRoot)
+  await setVersion(guttedVersion, { html: '<p>Nothing left.</p>', text: 'nothing left' })
 
   /*
    * Every private page gets a word of its own in its *published* text.
@@ -367,8 +430,28 @@ beforeAll(async () => {
       `<pre><code>&lt;p id=&quot;kept&quot;&gt;</code></pre>`,
     text: 'See Getting started and Salaries.',
   })
+  /*
+   * What a published page looks like with pictures on it, in both shapes at once.
+   *
+   * The first is what the renderer writes now — a reference that names nothing on its own. The
+   * second is what 0.12.0 wrote and stored: the object key, with the workspace uuid and a file uuid
+   * in it, and a signature that stopped working an hour after publication. Both are here so the
+   * assertions can say which of the two reaches a stranger.
+   */
+  await setVersion(picturedVersion, {
+    html:
+      `<p><img src="/__quire-asset/${FILE_ID}" alt="Office plan" loading="lazy"></p>` +
+      `<p><img src="${legacySignedUrl(WS_A, LEGACY_FILE_ID)}" alt="Old plan"></p>`,
+    text: 'officeplanpicture',
+  })
 
   fx.publicationId = (await publication(WS_A, fx.root)).id
+  /*
+   * A publication whose root is trashed *after* it is made. Nothing about the row says so — only
+   * the walk does — which is what made this the state four handlers forgot to have an answer for.
+   */
+  fx.guttedPublicationId = (await publication(WS_A, fx.guttedRoot, { slug: GUTTED_SLUG })).id
+  await run((tx) => svc.pages.trashPage(tx, WS_A, fx.guttedRoot))
   fx.lockedPublicationId = (await publication(WS_A, fx.root, { slug: LOCKED_SLUG, password: PASSWORD })).id
   fx.expiredPublicationId = (
     await publication(WS_A, fx.root, {
@@ -413,7 +496,7 @@ describe('what a published site is', () => {
     const answer = await site()
     expect(answer.locked).toBe(false)
     expect(answer.site?.nav.map((n) => n.path).sort()).toEqual(
-      ['', 'getting-started', 'getting-started/installing', 'links'].sort(),
+      ['', 'getting-started', 'getting-started/installing', 'links', 'office'].sort(),
     )
   })
 
@@ -504,6 +587,23 @@ describe('the pages a publication does not cover', () => {
   it('refuses to be walked out of the publication with a relative path', async () => {
     for (const path of ['../salaries', 'getting-started/../../salaries', '/salaries', '//salaries'])
       expect(await refusalFor('public.page', { workspaceId: WS_A, slug: SLUG, path })).toBe('NOT_FOUND')
+  })
+
+  /*
+   * The workspace segment reaches the module's middleware before the contract has validated it, so
+   * anything at all can arrive there. It must come back as the same 404 as a workspace with Quire
+   * switched off — never as a 500, which is what a ZodError out of `isModuleEnabled` produced.
+   */
+  it.each([
+    ['not a uuid', 'not-a-uuid'],
+    ['a uuid with a quote glued on', `${WS_A}'`],
+    ['a space', ' '],
+    ['empty', ''],
+    ['the word null', 'null'],
+    ['an integer', '1'],
+  ])('answers 404, never 500, for a workspace segment that is %s', async (_why, workspaceId) => {
+    for (const name of ['public.site', 'public.page', 'public.search', 'public.sitemap', 'public.robots'])
+      expect(await refusalFor(name, { workspaceId, slug: SLUG, path: '', q: 'ab' })).toBe('NOT_FOUND')
   })
 })
 
@@ -730,6 +830,140 @@ describe('the HTML that reaches a stranger', () => {
  * fixture is forbidden, including the ids of pages that *are* public: this API addresses pages by
  * path, so a page id appearing anywhere means something has started handing them out.
  */
+/**
+ * Pictures, which is the one thing on a published page that the module does not compose itself.
+ *
+ * Every other public answer is built from columns this module owns, and the sweep below holds them
+ * to carrying no identifier. A picture came from somewhere else — a presigned URL minted by the
+ * kernel out of a storage key — and it was signed into the *stored* HTML at publish time, so a
+ * published page with an illustration on it handed a stranger `ws/<workspaceId>/…/<fileId>/…`,
+ * with an hour before the link died. The reference replaced the URL; these are what hold it there.
+ */
+describe('a picture on a published page', () => {
+  const reference = (workspaceId = WS_A, fileId = FILE_ID) =>
+    svc.publications.assetReferenceFor(workspaceId, fileId)
+  const assetOf = (asset: string, over: Record<string, unknown> = {}) =>
+    ask('public.asset', { workspaceId: WS_A, slug: SLUG, asset, ...over })
+
+  it('reaches a stranger with no workspace id, no file id and no signature in it', async () => {
+    const { html } = await publicPage('office', { basePath: '/p/' })
+    expect(html, 'the workspace uuid was in a published page').not.toContain(WS_A)
+    expect(html, 'a file uuid was in a published page').not.toContain(FILE_ID)
+    expect(html, 'a storage signature was in a published page').not.toContain('X-Amz-')
+    expect(
+      html.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/),
+    ).toBeNull()
+    // The picture is still there — dropping every image would satisfy every line above.
+    expect(html).toContain('alt="Office plan"')
+    expect(html).toContain('src="/p/__media/')
+  })
+
+  it('drops the picture a version published by 0.12.0 signed into itself', async () => {
+    const { html } = await publicPage('office', { basePath: '/p/' })
+    expect(html, 'a legacy signed URL survived the scrub').not.toContain(LEGACY_FILE_ID)
+    expect(html).not.toContain('alt="Old plan"')
+  })
+
+  it('serves the bytes for the reference its own page carries', async () => {
+    const { html } = await publicPage('office', { basePath: '/p/' })
+    const asset = decodeURIComponent(/src="\/p\/__media\/([^"]+)"/.exec(html)?.[1] ?? '')
+    expect(asset.length).toBeGreaterThan(0)
+    const answer = (await assetOf(asset)) as { contentType: string; bytes: string; maxAge: number }
+    expect(answer.contentType).toBe('image/png')
+    expect(Buffer.from(answer.bytes, 'base64').toString()).toBe(PICTURE.toString())
+    expect(answer.maxAge).toBeGreaterThan(0)
+  })
+
+  it.each([
+    ['a reference that is not one at all', () => 'not-a-reference'],
+    ['a reference sealed for another workspace', () => reference(WS_B, FILE_ID)],
+    ['a reference for a file no published page uses', () => reference(WS_A, UNUSED_FILE_ID)],
+    ['a reference for a file that does not exist', () => reference(WS_A, randomUUID())],
+  ])('refuses %s', async (_what, make) => {
+    expect(await refusalFor('public.asset', { workspaceId: WS_A, slug: SLUG, asset: make() })).toBe(
+      'NOT_FOUND',
+    )
+  })
+
+  it('is behind the door of a publication that has one', async () => {
+    const asset = reference()
+    expect(await refusalFor('public.asset', { workspaceId: WS_A, slug: LOCKED_SLUG, asset })).toBe(
+      'NOT_FOUND',
+    )
+    const { token } = (await ask('public.unlock', {
+      workspaceId: WS_A,
+      slug: LOCKED_SLUG,
+      password: PASSWORD,
+    })) as { token: string }
+    const opened = (await assetOf(asset, { slug: LOCKED_SLUG, token })) as { bytes: string }
+    expect(Buffer.from(opened.bytes, 'base64').toString()).toBe(PICTURE.toString())
+  })
+
+  it('stops resolving the moment its page is taken out of the site', async () => {
+    const asset = reference()
+    expect(await refusalFor('public.asset', { workspaceId: WS_A, slug: SLUG, asset })).not.toBe('NOT_FOUND')
+    await run((tx) => svc.publications.setExcluded(tx, WS_A, fx.pictured, true))
+    try {
+      expect(await refusalFor('public.asset', { workspaceId: WS_A, slug: SLUG, asset })).toBe('NOT_FOUND')
+    } finally {
+      await run((tx) => svc.publications.setExcluded(tx, WS_A, fx.pictured, false))
+    }
+  })
+})
+
+/**
+ * The fourth state of a publication, which four handlers did not have an answer for.
+ *
+ * A publication whose root page has since been trashed still has its row. `site` and `page` said
+ * 404, `search` and `sitemap` said 200 with an empty body, and `robots` — the one procedure written
+ * to never distinguish one slug from another — said `indexable: true` with a sitemap path. Between
+ * them they were an existence oracle for a state nobody had enumerated, on the surface whose whole
+ * design is that there is nothing to be learnt from a refusal.
+ */
+describe('a publication that exists and can serve nothing', () => {
+  const NOWHERE = 'no-such-slug-at-all'
+  const answerFor = async (name: string, slug: string) =>
+    ask(name, { workspaceId: WS_A, slug, q: 'anything' }).then(
+      (value) => ({ ok: true, value }),
+      (err) => ({ ok: false, value: codeOf(err), message: (err as Error).message }),
+    )
+
+  it.each(['public.site', 'public.page', 'public.search', 'public.sitemap', 'public.robots'])(
+    'is indistinguishable from a slug nobody has taken, on %s',
+    async (name) => {
+      expect(await answerFor(name, GUTTED_SLUG)).toEqual(await answerFor(name, NOWHERE))
+    },
+  )
+
+  it('is not offered to a crawler', async () => {
+    expect(await ask('public.robots', { workspaceId: WS_A, slug: GUTTED_SLUG })).toEqual({
+      indexable: false,
+      sitemapPath: null,
+    })
+  })
+})
+
+describe('the door of a password-protected publication', () => {
+  it('stops weighing passwords long before a burst can work through them', async () => {
+    // A fresh publication, so the window belongs to this test rather than to whatever ran before.
+    const root = (await page({ spaceId: fx.spaceId, title: 'Throttled' })).id
+    await publish(root)
+    await publication(WS_A, root, { slug: 'throttled-handbook', password: PASSWORD })
+
+    const codes: string[] = []
+    for (let attempt = 0; attempt < UNLOCK_ATTEMPTS_EXPECTED + 3; attempt++)
+      codes.push(
+        await refusalFor('public.unlock', {
+          workspaceId: WS_A,
+          slug: 'throttled-handbook',
+          password: `wrong-${attempt}`,
+        }),
+      )
+    expect(codes.filter((c) => c === 'UNAUTHORIZED').length).toBe(UNLOCK_ATTEMPTS_EXPECTED)
+    expect(codes.slice(UNLOCK_ATTEMPTS_EXPECTED)).toEqual(['RATE_LIMITED', 'RATE_LIMITED', 'RATE_LIMITED'])
+  })
+})
+
 describe('the whole public surface, swept for identifiers', () => {
   const UUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g
 
@@ -770,19 +1004,29 @@ describe('the whole public surface, swept for identifiers', () => {
     }
   })
 
-  it('carries no uuid at all outside a page body', async () => {
-    // The bodies are the one place an id could arrive from outside this module — a signed picture
-    // URL is somebody else's key and may legitimately contain one — so the invariant is stated
-    // where it is absolute: nothing this module composes has an id in it.
+  /*
+   * **Page bodies are inside this rule now, and the carve-out is what the leak was hiding behind.**
+   *
+   * This assertion used to exempt `html`, on the reasoning that a picture's address is somebody
+   * else's key and may legitimately carry an id. It may not: that address was the storage key, so
+   * the exemption was drawn exactly around the one place a workspace uuid and a file uuid were
+   * going out. Pictures are references now and a reference is opaque, so there is nothing left that
+   * needs the exception — and the page with pictures on it is in the list precisely so that the
+   * rule cannot be satisfied by there being no pictures to leak.
+   */
+  it('carries no uuid at all, page bodies included', async () => {
     const composed = await Promise.all([
       site(),
       ask('public.search', { workspaceId: WS_A, slug: SLUG, q: 'handbook' }),
       ask('public.sitemap', { workspaceId: WS_A, slug: SLUG }),
-      publicPage('getting-started/installing').then(({ html, ...rest }) => rest),
+      publicPage('getting-started/installing'),
+      publicPage('office'),
+      publicPage('links'),
+      publicPage(''),
     ])
     for (const response of composed) {
       const found = JSON.stringify(response).match(UUID)
-      expect(found, `a composed public response carried ${found?.join(', ')}`).toBeNull()
+      expect(found, `a public response carried ${found?.join(', ')}`).toBeNull()
     }
   })
 })
@@ -835,6 +1079,76 @@ describe('the fences behind the queries', () => {
     } finally {
       client.release()
     }
+  })
+
+  /**
+   * The same role, on the tables the content is actually in.
+   *
+   * The test above reads `publications` and nothing else, which leaves the two tables a published
+   * page is made of — `pages` and `page_versions` — measured only by the service's own role. That
+   * role is a superuser in development and in CI, so it bypasses every policy: those tables were
+   * being checked by a connection for which row-level security does not exist, and would have
+   * passed with no policy on them at all.
+   */
+  it('shows that role no page and no version belonging to another workspace', async () => {
+    const pool = await restrictedPool()
+    const client = await pool.connect()
+    try {
+      const inWorkspace = async (workspaceId: string | null) => {
+        await client.query('begin')
+        await client.query('select set_config($1, $2, true)', ['app.workspace_id', workspaceId ?? ''])
+        const seen = {
+          pages: (await client.query('select workspace_id from mod_quire.pages')).rows as Array<{
+            workspace_id: string
+          }>,
+          versions: (await client.query('select workspace_id from mod_quire.page_versions')).rows as Array<{
+            workspace_id: string
+          }>,
+          // The publication walk itself, rooted at workspace B's page while workspace A is set.
+          otherRoot: (
+            await client.query('select id from mod_quire.pages where id = $1 and deleted_at is null', [
+              fx.otherWorkspacePage,
+            ])
+          ).rows.length,
+        }
+        await client.query('rollback')
+        return seen
+      }
+
+      const a = await inWorkspace(WS_A)
+      expect(a.pages.length).toBeGreaterThan(0)
+      expect(a.versions.length).toBeGreaterThan(0)
+      expect(new Set(a.pages.map((r) => r.workspace_id))).toEqual(new Set([WS_A]))
+      expect(new Set(a.versions.map((r) => r.workspace_id))).toEqual(new Set([WS_A]))
+      expect(a.otherRoot, "workspace A reached workspace B's root page by id").toBe(0)
+
+      const b = await inWorkspace(WS_B)
+      expect(new Set(b.pages.map((r) => r.workspace_id))).toEqual(new Set([WS_B]))
+      expect(b.otherRoot).toBe(1)
+
+      // No workspace resolved is nothing, on these two as well as on `publications`.
+      const none = await inWorkspace(null)
+      expect(none.pages).toEqual([])
+      expect(none.versions).toEqual([])
+    } finally {
+      client.release()
+    }
+  })
+
+  /**
+   * An upper-case workspace uuid in a public URL, which used to fail in the direction that hides.
+   *
+   * `withWorkspace` writes the caller's string into `app.workspace_id` verbatim, and every policy
+   * compares it as text against `workspace_id::text`, which Postgres renders lower case. So the
+   * whole surface returned nothing on a hardened instance and served the site normally everywhere
+   * the tests run, because the development and CI role is a superuser. This asserts the answer
+   * rather than the mechanism: the same URL, cased differently, is the same site.
+   */
+  it('serves the same site whatever case the workspace id arrives in', async () => {
+    const upper = (await ask('public.site', { workspaceId: WS_A.toUpperCase(), slug: SLUG })) as PublicSite
+    expect(upper.site?.nav.map((n) => n.path).sort()).toEqual(
+      (await site()).site?.nav.map((n) => n.path).sort(),
+    )
   })
 })
 
@@ -908,19 +1222,101 @@ describe('paths', () => {
 })
 
 describe('the public scrub, on its own', () => {
+  /** No page is public and no picture resolves, unless a case says otherwise. */
+  const scrub = (html: string, over: Partial<Parameters<typeof publicHtml>[2]> = {}, basePath = '/p/') =>
+    publicHtml(html, basePath, { pagePath: () => null, assetHref: () => null, ...over })
+
   it('leaves an off-site link alone', () => {
     const html = '<p><a href="https://example.com/x">out</a></p>'
-    expect(publicHtml(html, () => null, '/p/')).toBe(html)
+    expect(scrub(html)).toBe(html)
   })
 
   it('removes only whole id attributes', () => {
-    expect(publicHtml('<td data-colwidth="120" id="x">c</td>', () => null, '/p/')).toBe(
-      '<td data-colwidth="120">c</td>',
-    )
+    expect(scrub('<td data-colwidth="120" id="x">c</td>')).toBe('<td data-colwidth="120">c</td>')
   })
 
   it('percent-encodes a path so a Persian slug survives the address bar', () => {
     const html = '<a href="/quire/k/00000000-0000-0000-0000-000000000001">x</a>'
-    expect(publicHtml(html, () => 'راهنما', '/p/')).toContain(`/p/${encodeURI('راهنما')}`)
+    expect(scrub(html, { pagePath: () => 'راهنما' })).toContain(`/p/${encodeURI('راهنما')}`)
   })
+
+  /*
+   * Pictures, which is where the storage key used to go out.
+   *
+   * A published page drew its images as presigned URLs — `ws/<workspaceId>/<module>/<yyyy>/<mm>/
+   * <fileId>/<name>` plus a signature — so a page with one picture on it handed a stranger the
+   * tenant's workspace uuid and a file uuid, and stopped loading an hour later. The renderer writes
+   * a reference now; these are the shapes that must and must not survive the scrub.
+   */
+  const WS = '01920000-0000-7000-8000-0000000000aa'
+  const FILE = '01920000-0000-7000-8000-0000000000bb'
+  const SIGNED =
+    `http://localhost:9000/kern/ws/${WS}/quire/2026/08/${FILE}/office-plan.png` +
+    '?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Credential=kern%2F20260828&amp;X-Amz-Signature=deadbeef'
+
+  it('turns a picture reference into an address on this site', () => {
+    const out = scrub(`<p><img src="/__quire-asset/${FILE}" alt="Plan" loading="lazy"></p>`, {
+      assetHref: () => '/p/__media/v1.aa.bb.cc',
+    })
+    expect(out).toBe('<p><img src="/p/__media/v1.aa.bb.cc" alt="Plan" loading="lazy"></p>')
+    expect(out).not.toContain(FILE)
+  })
+
+  it('drops a picture whose reference cannot be handed out, rather than drawing it broken', () => {
+    expect(scrub(`<p>a<img src="/__quire-asset/${FILE}" alt="x">b</p>`)).toBe('<p>ab</p>')
+  })
+
+  it.each([
+    ['a signed storage URL left in an already-published version', `<img src="${SIGNED}" alt="x">`],
+    ['a root-relative source, which is a link into the application', '<img src="/api/core/files/x" alt="">'],
+    ['a source with nothing in it', '<img src="" alt="">'],
+  ])('drops %s', (_what, html) => {
+    const out = scrub(html, { assetHref: () => '/p/__media/tok' })
+    expect(out).toBe('')
+    expect(out).not.toContain(WS)
+    expect(out).not.toContain(FILE)
+  })
+
+  it('leaves a picture an author hosts somewhere else alone', () => {
+    const html = '<img src="https://example.com/logo.png" alt="Logo">'
+    expect(scrub(html)).toBe(html)
+  })
+
+  /*
+   * A link into the application is not only a page mention.
+   *
+   * `safeHref` passes any root-relative path through, so an author who pastes a page's address out
+   * of their own address bar writes `/quire/<space>/<page-id>#block-7` or `…?comment=1` — and the
+   * scrub used to anchor the page id on the closing quote, so anything after it kept the whole
+   * href. The result was a live deep link into the private application, carrying the uuid of a page
+   * the very same public API answers 404 for. Every shape of that link belongs here, because the
+   * one that was tested is the one that never leaked.
+   */
+  const PRIVATE_ID = '00000000-0000-0000-0000-0000000000ff'
+  const linksIntoTheApp = [
+    `<a href="/quire/hb/${PRIVATE_ID}">x</a>`,
+    `<a href="/quire/hb/${PRIVATE_ID}#block-7">x</a>`,
+    `<a href="/quire/hb/${PRIVATE_ID}?comment=1">x</a>`,
+    `<a href="/quire/hb/${PRIVATE_ID}/">x</a>`,
+    `<a href="/quire/hb/${PRIVATE_ID}/history">x</a>`,
+    `<a href="/quire/hb/${PRIVATE_ID}extra">x</a>`,
+    `<a href="/quire/hb">x</a>`,
+    `<a href="/quire/hb/databases/${PRIVATE_ID}">x</a>`,
+  ]
+
+  it.each(linksIntoTheApp)('carries no page id out of a private link: %s', (html) => {
+    const out = scrub(html)
+    expect(out, 'a page id reached the public HTML').not.toContain(PRIVATE_ID)
+    expect(out, 'a link into the application reached the public HTML').not.toContain('/quire/')
+  })
+
+  it.each(['#block-7', '?comment=1', '/', '/history'])(
+    're-points a public page mention whatever follows its id (%s)',
+    (tail) => {
+      const html = `<a href="/quire/hb/${PRIVATE_ID}${tail}">x</a>`
+      const out = scrub(html, { pagePath: () => 'guide/install' })
+      expect(out).toContain('href="/p/guide/install"')
+      expect(out).not.toContain(PRIVATE_ID)
+    },
+  )
 })

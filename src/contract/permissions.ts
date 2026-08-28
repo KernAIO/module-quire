@@ -242,5 +242,6 @@ export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
   'public.search': { check: 'public', permission: 'quire.page.publish' },
   'public.sitemap': { check: 'public', permission: 'quire.page.publish' },
   'public.robots': { check: 'public', permission: 'quire.page.publish' },
+  'public.asset': { check: 'public', permission: 'quire.page.publish' },
   'public.unlock': { check: 'public', permission: 'quire.page.publish' },
 }

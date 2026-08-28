@@ -474,6 +474,9 @@ export const en: Record<string, Message> = {
   'quire.share_published': 'This page is public',
   'quire.share_published_when': 'Published {when}',
   'quire.share_published_toast': 'This page is public. Anyone with the link can read it.',
+  'quire.share_published_empty': 'The site is made, and it has nothing to show',
+  'quire.share_published_empty_toast':
+    'The address works, but this page has never been published, so there is nothing at it yet.',
   'quire.share_check_running': 'Checking what a signed-out visitor sees…',
   'quire.share_check_ok': {
     one: 'A signed-out visitor sees {n} page.',
@@ -1002,6 +1005,8 @@ const ar: Record<string, Message> = {
   'quire.share_published': 'هذه الصفحة عامة',
   'quire.share_published_when': 'نُشرت {when}',
   'quire.share_published_toast': 'هذه الصفحة عامة الآن. كل من يملك الرابط يقرؤها.',
+  'quire.share_published_empty': 'أُنشئ الموقع، ولا شيء لديه ليعرضه',
+  'quire.share_published_empty_toast': 'العنوان يعمل، لكن هذه الصفحة لم تُنشر قط، فلا يوجد عندها شيء بعد.',
   'quire.share_check_running': 'جارٍ التحقّق ممّا يراه زائر غير مسجّل…',
   'quire.share_check_ok': {
     zero: 'الزائر غير المسجّل لا يرى أي صفحة.',
@@ -1501,6 +1506,9 @@ const de: Record<string, Message> = {
   'quire.share_published': 'Diese Seite ist öffentlich',
   'quire.share_published_when': 'Veröffentlicht {when}',
   'quire.share_published_toast': 'Diese Seite ist öffentlich. Wer den Link hat, kann sie lesen.',
+  'quire.share_published_empty': 'Die Website steht, und sie hat nichts zu zeigen',
+  'quire.share_published_empty_toast':
+    'Die Adresse funktioniert, aber diese Seite wurde nie veröffentlicht — dort ist also noch nichts.',
   'quire.share_check_running': 'Wird geprüft, was ein abgemeldeter Besuch sieht …',
   'quire.share_check_ok': {
     one: 'Ein abgemeldeter Besuch sieht {n} Seite.',
@@ -1986,6 +1994,9 @@ const fa: Record<string, Message> = {
   'quire.share_published': 'این صفحه عمومی است',
   'quire.share_published_when': '{when} منتشر شد',
   'quire.share_published_toast': 'این صفحه عمومی شد. هر کس پیوند را داشته باشد می‌خواند.',
+  'quire.share_published_empty': 'سایت ساخته شد و چیزی برای نشان‌دادن ندارد',
+  'quire.share_published_empty_toast':
+    'نشانی کار می‌کند، اما این صفحه هرگز منتشر نشده است، پس هنوز چیزی در آن نیست.',
   'quire.share_check_running': 'بررسی آنچه بازدیدکنندهٔ واردنشده می‌بیند…',
   'quire.share_check_ok': {
     one: 'بازدیدکنندهٔ واردنشده {n} صفحه می‌بیند.',
@@ -2473,6 +2484,9 @@ const tr: Record<string, Message> = {
   'quire.share_published': 'Bu sayfa herkese açık',
   'quire.share_published_when': '{when} yayımlandı',
   'quire.share_published_toast': 'Bu sayfa herkese açık. Bağlantısı olan herkes okuyabilir.',
+  'quire.share_published_empty': 'Site kuruldu ve gösterecek bir şeyi yok',
+  'quire.share_published_empty_toast':
+    'Adres çalışıyor, ama bu sayfa hiç yayımlanmadı; dolayısıyla orada henüz bir şey yok.',
   'quire.share_check_running': 'Oturum açmamış bir ziyaretçinin ne gördüğü denetleniyor…',
   'quire.share_check_ok': {
     one: 'Oturum açmamış bir ziyaretçi {n} sayfa görüyor.',

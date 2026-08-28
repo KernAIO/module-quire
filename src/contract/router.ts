@@ -169,6 +169,44 @@ export type PublicSearchHit = z.infer<typeof PublicSearchHit>
 export const PublicSitemapEntry = z.object({ path: z.string(), lastModified: Timestamp })
 
 /**
+ * One picture from a published page, **as bytes rather than as an address**.
+ *
+ * A published page used to carry its pictures as presigned storage URLs, written into the stored
+ * HTML at publish time. That was wrong twice over, and both halves were measured rather than
+ * argued. The URL is the storage key — `ws/<workspaceId>/<module>/<yyyy>/<mm>/<fileId>/<name>` —
+ * so every published page with a picture on it handed a stranger the tenant's workspace uuid and a
+ * file uuid, on the one surface whose whole rule is that no response carries an id; and a presigned
+ * GET expires in an hour while the HTML it was baked into is rendered once and stored for ever, so
+ * every image on every published site broke sixty minutes after it was published.
+ *
+ * So the HTML carries an opaque, workspace-sealed reference and the bytes come through here. The
+ * route layer fetches this from **its own server** and streams the body back under a URL of its
+ * own; nothing in the answer may reach a browser as-is, which is why it is bytes and not a link —
+ * there is no address in it to leak, and none to expire.
+ *
+ * Capped rather than streamed on purpose: a published handbook's illustration is tens of kilobytes,
+ * this path is anonymous, and an unbounded body on an unauthenticated endpoint is a way to spend
+ * somebody else's memory. Over the cap answers the same 404 as a picture that is not there.
+ */
+export const PublicAsset = z.object({
+  /**
+   * The stored content type, narrowed to an image type before it is answered.
+   *
+   * The route layer serves these from the application's own origin, so the two things it owes back
+   * are `X-Content-Type-Options: nosniff` and, because `image/svg+xml` is a document that can carry
+   * script, a `Content-Security-Policy: default-src 'none'` on the response. Anything the server
+   * could not narrow to an image is refused here rather than sent for the route layer to be careful
+   * with.
+   */
+  contentType: z.string(),
+  /** base64 of the whole object */
+  bytes: z.string(),
+  /** how long the route layer may cache it; a version is immutable, so this is long */
+  maxAge: z.number().int().min(0),
+})
+export type PublicAsset = z.infer<typeof PublicAsset>
+
+/**
  * The URL prefix the route layer serves this site under, so a link between two published pages is a
  * link and not a dead mention.
  *
@@ -184,6 +222,21 @@ export const PublicBasePath = z
   .max(200)
   .regex(/^\/(?:[A-Za-z0-9._~-]+\/)*$/, 'an absolute path ending in a slash')
   .default('/')
+
+/**
+ * The one thing the module does ask of whatever serves a published site: a place for its pictures.
+ *
+ * `public.page` writes every `<img src>` as `<basePath><segment>/<reference>`, so the route layer
+ * has to answer that address by calling `public.asset` and streaming the bytes back. It is a
+ * constant rather than a convention because two sides have to agree on it and only one of them can
+ * be wrong quietly — a route layer that does not serve it renders a published page with no
+ * pictures, which looks like a rendering bug and is a missing route.
+ *
+ * The leading `__` is what keeps it out of the way: a page's own path segment is `slugifyTitle`'s
+ * output, which is Unicode letters and digits separated by hyphens, so no title can ever produce a
+ * segment starting with an underscore and no published page can be shadowed by this one.
+ */
+export const PUBLIC_ASSET_SEGMENT = '__media'
 
 export const quireContract = {
   spaces: {
@@ -808,6 +861,31 @@ export const quireContract = {
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/robots', ...t('public') })
       .input(z.object({ workspaceId: WorkspaceId, slug: Publication.shape.slug }))
       .output(z.object({ indexable: z.boolean(), sitemapPath: z.string().nullable() })),
+    /**
+     * The bytes of one picture on a published page.
+     *
+     * `asset` is the opaque reference the page's own HTML carries — an AES-GCM envelope sealed with
+     * the instance secret and bound by its associated data to this workspace, so it names nothing
+     * on its own and cannot be carried to another instance. Resolving it is not enough on its own:
+     * the file has to be referenced by a version that is *currently* public in this publication, so
+     * opting a page out stops its pictures resolving in the same breath as its prose.
+     *
+     * Everything unresolvable is the same 404 as everything else here — a reference that will not
+     * decrypt, one for a file nothing public uses, a file that has been deleted, an object over the
+     * cap. And a locked publication answers the door first: the pictures are behind the password
+     * along with the pages they are on.
+     */
+    asset: baseContract
+      .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/asset', ...t('public') })
+      .input(
+        z.object({
+          workspaceId: WorkspaceId,
+          slug: Publication.shape.slug,
+          asset: z.string().min(1).max(2048),
+          token: z.string().max(4096).nullable().default(null),
+        }),
+      )
+      .output(PublicAsset),
     /** Present the password, get a token. A site with no password has no door, and answers 404. */
     unlock: baseContract
       .route({ method: 'POST', path: '/public/{workspaceId}/{slug}/unlock', ...t('public') })

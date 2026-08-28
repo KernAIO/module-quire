@@ -43,12 +43,27 @@ const os = implement(quireContract).$context<RequestContext>()
  * a URL is owed "there is nothing here" and not "there is something here that this customer has
  * switched off". The one thing it must not do is `requireMember`.
  */
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
 const publicSurface = o.middleware(async ({ context, next }, input) => {
   const { workspaceId } = input as { workspaceId?: unknown }
-  if (typeof workspaceId !== 'string' || workspaceId.length === 0)
+  /*
+   * A middleware runs *before* the contract validates its input, so this is the first and only
+   * thing that sees the workspace segment — and it used to hand whatever arrived to
+   * `kernel.isModuleEnabled`, whose own schema is `z.uuid()`. So `/api/quire/public/not-a-uuid/x`
+   * came back as a ZodError this module has no case for: **HTTP 500** on the one surface that
+   * promises everything unresolvable is a 404, and a stack trace written at error level for every
+   * such request, on an endpoint anyone on the internet can reach as fast as they like.
+   *
+   * The shape is checked here instead. Anything that is not a workspace id is the same "there is
+   * nothing here" as a workspace that has switched Quire off — which is the right answer, because a
+   * signed-out stranger is owed no more than that. `.catch` covers the rest for the same reason: a
+   * settings lookup that fails must not become a 500 either.
+   */
+  if (typeof workspaceId !== 'string' || !UUID.test(workspaceId))
     throw new KernError('NOT_FOUND', 'There is no published site at this address')
-  if (!(await context.kernel.isModuleEnabled(workspaceId, MODULE_ID)))
-    throw new KernError('NOT_FOUND', 'There is no published site at this address')
+  const enabled = await context.kernel.isModuleEnabled(workspaceId, MODULE_ID).catch(() => false)
+  if (!enabled) throw new KernError('NOT_FOUND', 'There is no published site at this address')
   return next()
 })
 
@@ -69,11 +84,44 @@ const anonymousOnly = o.middleware(({ context, next }) =>
   next({ context: { ...context, principal: ANONYMOUS } }),
 )
 
+/**
+ * The one refusal every unservable publication shares, in one place so it cannot drift.
+ *
+ * It drifted. A publication whose root page had since been trashed was 404 from `site` and `page`,
+ * **200 with an empty body** from `search` and `sitemap`, and `indexable: true` from `robots` — so
+ * four procedures written to be indistinguishable from "no such slug" were, between them, an
+ * existence oracle for a fifth state nobody had enumerated. And `page` said "page" where the others
+ * said "site", which separated a locked publication from a missing one on the endpoint least able
+ * to afford it.
+ *
+ * The rule the wording now follows: **a refusal about the publication says "site", and a refusal
+ * about a path inside a servable one says "page".** A reader who mistypes a page of a real handbook
+ * is the only person who ever sees the second sentence.
+ */
+const noSite = () => new KernError('NOT_FOUND', 'There is no published site at this address')
+
 export function implement_(kernel: Kernel) {
   const scoped = os.use(workspaceScoped(MODULE_ID))
   const open = os.use(publicSurface).use(anonymousOnly)
   const svc = quireServices(kernel)
   const notify = createNotify(kernel)
+
+  /**
+   * A publication that can actually be served, and its whole tree, or `noSite`.
+   *
+   * Every anonymous read but `site` and `robots` starts here, so the four ways of not being
+   * servable — no such slug, expired, still locked, nothing left under the root — are one answer
+   * written once rather than four handlers agreeing by hand. `site` needs its own shape because
+   * `locked` is a state it reports rather than refuses, and `robots` because it never refuses at
+   * all.
+   */
+  const servable = async (tx: Tx, workspaceId: string, slug: string, token: string | null) => {
+    const pub = await svc.publications.bySlug(tx, workspaceId, slug)
+    if (!(await svc.publications.unlocked(pub, token))) throw noSite()
+    const nodes = await svc.publications.tree(tx, workspaceId, pub)
+    if (!nodes[0]) throw noSite()
+    return { pub, nodes }
+  }
 
   const run = <T>(
     context: RequestContext,
@@ -1174,7 +1222,7 @@ export function implement_(kernel: Kernel) {
           // No root means the root page is archived, trashed, opted out, unpublished or not a page.
           // The publication row survives that; the site does not.
           const root = nodes[0]
-          if (!root) throw new KernError('NOT_FOUND', 'There is no published site at this address')
+          if (!root) throw noSite()
           const newest = nodes.reduce(
             (at, node) => Math.max(at, node.published_at.getTime()),
             root.published_at.getTime(),
@@ -1202,11 +1250,7 @@ export function implement_(kernel: Kernel) {
 
       page: open.public.page.handler(({ input }) =>
         svc.publications.read(input.workspaceId, async (tx) => {
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
-          if (!(await svc.publications.unlocked(pub, input.token)))
-            throw new KernError('NOT_FOUND', 'There is no published page at this address')
-
-          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
           const node = svc.publications.find(nodes, input.path)
           return {
             path: node.path,
@@ -1228,10 +1272,7 @@ export function implement_(kernel: Kernel) {
 
       search: open.public.search.handler(({ input }) =>
         svc.publications.read(input.workspaceId, async (tx) => {
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
-          if (!(await svc.publications.unlocked(pub, input.token)))
-            throw new KernError('NOT_FOUND', 'There is no published site at this address')
-          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
           const hits = await svc.publications.search(tx, input.workspaceId, nodes, input.q, input.limit)
           return {
             items: hits.map((hit) => ({
@@ -1251,6 +1292,10 @@ export function implement_(kernel: Kernel) {
           // password-protected handbook in a file whose whole purpose is to be fetched by robots.
           if (pub.passwordHash || !pub.indexable) return { entries: [] }
           const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          // A publication whose root has since been trashed serves nothing, so it is the same 404
+          // as a slug nobody took — an empty sitemap here would say "this address is a site" to a
+          // crawler that has just been told the opposite by every other procedure.
+          if (!nodes[0]) throw noSite()
           return {
             entries: nodes.map((node) => ({
               path: node.path,
@@ -1262,14 +1307,41 @@ export function implement_(kernel: Kernel) {
 
       robots: open.public.robots.handler(({ input }) =>
         svc.publications.read(input.workspaceId, async (tx) => {
-          // The one place a missing publication is not an error: a crawler asking about a slug
-          // nobody has taken, one that has expired, and one behind a password have to get the same
-          // answer, or this becomes the oracle every other procedure refuses to be.
+          /*
+           * The one place a missing publication is not an error: a crawler asking about a slug
+           * nobody has taken, one that has expired, and one behind a password have to get the same
+           * answer, or this becomes the oracle every other procedure refuses to be.
+           *
+           * There is a **fourth** state and this comment used to list three. A publication whose
+           * root page has since been trashed, archived, opted out or unpublished still has its row:
+           * `site`, `page`, `search` and `sitemap` all answer 404 for it, and robots answered
+           * `indexable: true` with a sitemap path — so the one procedure written to never
+           * distinguish anything was the only one admitting that the slug existed. It is the walk
+           * rather than the row that decides, which is why the tree is read here.
+           */
           const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug).catch(() => null)
           if (!pub || pub.passwordHash || !pub.indexable) return { indexable: false, sitemapPath: null }
+          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          if (!nodes[0]) return { indexable: false, sitemapPath: null }
           // Relative to whatever prefix the route layer serves this site under; the module has no
           // way to know that, and guessing would put a wrong absolute URL in a robots file.
           return { indexable: true, sitemapPath: 'sitemap.xml' }
+        }),
+      ),
+
+      /**
+       * The bytes of one picture on a published page.
+       *
+       * It goes through `servable` like every other read, so a picture is behind the same door, the
+       * same expiry and the same walk as the prose it sits in — and `svc.publications.asset` then
+       * insists the file is referenced by a version *in this tree* before it fetches anything. That
+       * second check is what stops a reference lifted out of one published site from resolving
+       * against another in the same workspace.
+       */
+      asset: open.public.asset.handler(({ input }) =>
+        svc.publications.read(input.workspaceId, async (tx) => {
+          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
+          return svc.publications.asset(tx, input.workspaceId, nodes, input.asset)
         }),
       ),
 

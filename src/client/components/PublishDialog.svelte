@@ -36,12 +36,11 @@ import { quireKeys } from '../query.js'
 interface Props {
   open?: boolean
   workspaceId: string
-  workspaceSlug: string
   spaceId: string
   /** the page the site would be rooted at — its own published version is the front page */
   page: Pick<Page, 'id' | 'title' | 'publishedVersionId'>
 }
-let { open = $bindable(false), workspaceId, workspaceSlug, spaceId, page }: Props = $props()
+let { open = $bindable(false), workspaceId, spaceId, page }: Props = $props()
 
 const api = getQuireApi()
 const client = useQueryClient()
@@ -164,6 +163,16 @@ $effect(() => {
 const slugValid = $derived(slug.length >= 2 && slug.length <= 64 && SLUG_PATTERN.test(slug))
 
 /**
+ * A site that exists and serves nothing, which is a third state and used to be told as the first.
+ *
+ * The publication row and the root page's published version are independent: making the one does
+ * not publish the other, so "there is a publication" is not "this page is public". Every sentence
+ * in this dialog that used to branch on `publication` alone said the wrong thing for as long as
+ * somebody had made a site out of a page they had not published.
+ */
+const emptySite = $derived(publication !== null && page.publishedVersionId === null)
+
+/**
  * The address that is **actually serving**, not the one in the box.
  *
  * Once a site exists the two can differ for as long as somebody is halfway through renaming it, and
@@ -172,11 +181,11 @@ const slugValid = $derived(slug.length >= 2 && slug.length <= 64 && SLUG_PATTERN
  * be wrong about, so it follows the field — that is the whole point of showing it then.
  */
 const url = $derived(
-  publicSiteUrl({ workspaceSlug, slug: publication?.slug ?? (slugValid ? slug : 'your-page') }),
+  publicSiteUrl({ workspaceId, slug: publication?.slug ?? (slugValid ? slug : 'your-page') }),
 )
 /** The address it becomes on save — shown as a sentence, so there are never two links on screen. */
 const pendingUrl = $derived(
-  publication && slugValid && slug !== publication.slug ? publicSiteUrl({ workspaceSlug, slug }) : null,
+  publication && slugValid && slug !== publication.slug ? publicSiteUrl({ workspaceId, slug }) : null,
 )
 
 /**
@@ -266,6 +275,33 @@ function reasonFor(row: Descendant): string | null {
 let busy = false
 let rowsBusy = $state<string[]>([])
 
+/**
+ * Where focus goes when the confirmation arms and disarms.
+ *
+ * Pressing "Unpublish" destroys the button being pressed and draws two others in its place, so the
+ * browser has nothing to keep focus on and the dialog's own trap hands it to the **Close** button —
+ * eight Tab stops away from the confirmation, and one Enter away from dismissing the whole dialog.
+ * A keyboard user pressing Enter twice, which is what confirming feels like, closes the dialog and
+ * leaves the site published with nothing said. Same family as disabling a focused control, and it
+ * has the same fix: put focus somewhere deliberate rather than letting it fall.
+ *
+ * It lands on **Cancel**, not on the confirming button: a repeated Enter must not be able to take a
+ * site down, and Cancel is one Tab from the answer either way. Disarming sends it back to the
+ * control that armed it, so the round trip leaves the keyboard where it started.
+ */
+let confirmRef = $state<HTMLElement | null>(null)
+let unpublishRef = $state<HTMLElement | null>(null)
+/* A plain `let`, like `busy`: it records what the last run saw and must not be a dependency of the
+   effect that writes it. Equal values mean this run is a re-render rather than a change, and the
+   first run is always equal — so opening the dialog never steals focus from the address field. */
+let confirmWas = false
+$effect(() => {
+  const asking = confirmingUnpublish
+  if (confirmWas === asking) return
+  confirmWas = asking
+  ;(asking ? confirmRef : unpublishRef)?.focus()
+})
+
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 async function refresh() {
@@ -287,7 +323,9 @@ async function publish() {
     password = ''
     dropPassword = false
     await refresh()
-    toast.success(t('share_published_toast'))
+    toast.success(
+      page.publishedVersionId === null ? t('share_published_empty_toast') : t('share_published_toast'),
+    )
   } catch (err) {
     error = message(err)
   } finally {
@@ -377,10 +415,14 @@ async function copyLink() {
       It is not a warning that appears when something is wrong — it is a description of what the
       button does, and it stays true after the button has been pressed.
     -->
-    <section class="tell" class:live={publication !== null}>
-      <Icon name={publication ? 'globe' : 'triangle-alert'} size={17} />
+    <section class="tell" class:live={publication !== null && !emptySite}>
+      <Icon name={publication && !emptySite ? 'globe' : 'triangle-alert'} size={17} />
       <div class="tell-body">
-        <p class="tell-title">{publication ? t('share_published') : t('share_warn_title')}</p>
+        <p class="tell-title">
+          {#if emptySite}{t('share_published_empty')}
+          {:else if publication}{t('share_published')}
+          {:else}{t('share_warn_title')}{/if}
+        </p>
         <p>{t('share_warn_body')}</p>
         <p>{t('share_warn_version')}</p>
         <p>{t('share_warn_unpublished')}</p>
@@ -388,7 +430,15 @@ async function copyLink() {
       </div>
     </section>
 
-    {#if !publication && page.publishedVersionId === null}
+    <!--
+      Not gated on there being no publication yet, which is what made this dialog say three things
+      at once and mean two of them. Publishing a page that has never been published put "This page
+      is public" at the top and a success toast over it, while the measured line forty pixels below
+      read "A signed-out visitor cannot open this address yet" — the loudest affordances asserting
+      what only the quietest one had checked. The site being made does not make the page published,
+      so the sentence that says so belongs on screen for exactly as long as it is true.
+    -->
+    {#if page.publishedVersionId === null}
       <p class="caution" role="status">{t('share_needs_publish')}</p>
     {/if}
 
@@ -612,15 +662,28 @@ async function copyLink() {
         <Button variant="secondary" onclick={() => (open = false)}>{t('cancel')}</Button>
       {:else if publication}
         {#if confirmingUnpublish}
-          <p class="ask">{t('share_unpublish_ask')}</p>
-          <Button variant="secondary" size="sm" onclick={() => (confirmingUnpublish = false)}>
+          <!-- `alert`, because the question is drawn where nobody is looking: it appears at the
+               foot of a long dialog, and a reader who is not watching that corner is given no other
+               sign that pressing the button asked something rather than doing it. -->
+          <p class="ask" role="alert">{t('share_unpublish_ask')}</p>
+          <Button
+            bind:ref={confirmRef}
+            variant="secondary"
+            size="sm"
+            onclick={() => (confirmingUnpublish = false)}
+          >
             {t('cancel')}
           </Button>
           <Button variant="danger" size="sm" onclick={() => void unpublish()}>
             {t('share_unpublish')}
           </Button>
         {:else}
-          <Button variant="danger" size="sm" onclick={() => (confirmingUnpublish = true)}>
+          <Button
+            bind:ref={unpublishRef}
+            variant="danger"
+            size="sm"
+            onclick={() => (confirmingUnpublish = true)}
+          >
             {t('share_unpublish')}
           </Button>
           <span class="spacer"></span>

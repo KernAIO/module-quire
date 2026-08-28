@@ -1631,6 +1631,16 @@ export function createMockQuireApi() {
         return { indexable: true, sitemapPath: 'sitemap.xml' }
       },
 
+      /*
+       * There are no files behind the mock, so nothing resolves — and that is the honest answer
+       * rather than a gap. `publicHtmlOf` draws a version's preview as one paragraph and never
+       * emits an `<img>`, so no page here carries a reference to resolve; a demo that invented
+       * bytes would be showing a picture the real surface would have refused.
+       */
+      asset: async () => {
+        throw notFound('Asset')
+      },
+
       unlock: async ({ slug, password }: { slug: string; password: string }) => {
         const pub = publicationBySlug(slug)
         // A site with no password has no door, and saying so would confirm the slug exists.

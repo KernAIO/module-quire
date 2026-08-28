@@ -33,10 +33,11 @@ import type { Principal } from '@kernhq/contracts'
 import { KernError, type Kernel, type Tx } from '@kernhq/kernel'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Publication } from '../../contract/index.js'
+import { PUBLIC_ASSET_SEGMENT } from '../../contract/index.js'
 import { escapeHtml } from '../render.js'
 import { pages, pageVersions, publications } from '../schema.js'
 import type { QuireAccess } from './access.js'
-import type { QuireVersions } from './versions.js'
+import { ASSET_REFERENCE_PREFIX, type QuireVersions } from './versions.js'
 
 const scrypt = promisify(scryptCb) as (
   password: string,
@@ -55,6 +56,56 @@ const MAX_BACKFILL = 200
 const TOKEN_TTL_MS = 12 * 60 * 60_000
 /** How much of a page's prose a search hit shows around the match. */
 const SNIPPET = 180
+/**
+ * The largest picture this surface will hand out, and how long a reader may keep one.
+ *
+ * The bytes come back through an anonymous procedure, so an object with no ceiling on it is a way
+ * to spend the server's memory from outside. Over the cap is the same 404 as a picture that is not
+ * there — an oversized image on a published page is a defect in the page rather than something to
+ * fail a request over. A version is immutable and its reference is sealed to one file, so the cache
+ * lifetime is as long as anything in Kern gets.
+ */
+const MAX_ASSET_BYTES = 8 * 1024 * 1024
+const ASSET_MAX_AGE = 31_536_000
+/**
+ * What a picture is allowed to be, because the route layer serves these from the app's own origin.
+ *
+ * A stored content type is whatever an uploader declared, and a reference resolves on the same
+ * origin as the signed-in application — so anything the browser would treat as a document rather
+ * than as an image is a way to run script beside somebody's session. The node these references come
+ * from is an image node, so the list is the image types and nothing else, and an object claiming to
+ * be anything else is the same 404 as one that is not there.
+ *
+ * `image/svg+xml` is on the list and is the one that needs saying: an SVG *is* a document, and it
+ * can carry script. It is here because a diagram in a handbook is very often one, and it is safe
+ * only because the route layer is required to serve every one of these with `nosniff`, an inline
+ * disposition and a `default-src 'none'` policy — see the note on `PublicAsset` in the contract.
+ */
+const ASSET_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/svg+xml',
+])
+/**
+ * How many passwords one publication will weigh in a minute, and why the number is here.
+ *
+ * `public.unlock` is reachable by anyone on the internet with no account, and every attempt costs
+ * the server an scrypt at N=16384 — 600 of them measured at roughly a minute of single-thread work,
+ * bought with one unauthenticated burst. The platform's own limiter is a *shared* budget across the
+ * whole API rather than a password fence, so a publication needs one of its own.
+ *
+ * It is per process and therefore multiplied by however many copies of the host service are
+ * running, which is honest rather than ideal: a counter that has to be right across a cluster
+ * belongs in the platform limiter, and until it is there this is the difference between 864,000
+ * guesses a day from one address and 14,400.
+ */
+const UNLOCK_ATTEMPTS = 10
+const UNLOCK_WINDOW_MS = 60_000
+/** Above this many publications tracked at once the window is dropped wholesale rather than grown. */
+const UNLOCK_TRACKED_MAX = 5000
 
 /**
  * A publication as a client sees it — with `hasPassword` in place of the hash.
@@ -213,16 +264,75 @@ const normalisePath = (path: string): string =>
  * text `id="x"` arrives as `id=&quot;x&quot;` and is left alone. `publications.int.test.ts` holds
  * that with a code block written to look like markup.
  */
+const APP_LINK = /href="\/quire\/[^"]*"/g
+const APP_PAGE_LINK =
+  /^href="\/quire\/[^"/]*\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[/?#][^"]*)?"$/
+
+/**
+ * Pictures, held to the same rule as links: a `src` this module cannot account for does not go out.
+ *
+ * `render.ts` escapes every attribute value, so `>` never appears inside one and `[^>]*` cannot run
+ * past the tag it is in — the same property that makes the link pass above safe.
+ *
+ * Three shapes reach here and only one of them is servable. A **reference** is what the public
+ * render writes and it resolves to an address on this site. An **absolute off-site URL** is an
+ * author's own picture hosted somewhere else, and it is left alone. Everything else is dropped
+ * together with its `<img>`, and that is deliberately wide: a root-relative `src` is a link into
+ * the private application, and a *signed storage URL* — which is what versions published by 0.12.0
+ * have stored in them — is the tenant's workspace uuid and a file uuid written into a page on the
+ * public internet, with an hour before it stops working. `0009_public_asset_references.sql` rewrites
+ * the ones already in the database; this is what covers a row the migration did not reach.
+ */
+const IMG_TAG = /<img\b[^>]*>/g
+const ASSET_SRC = new RegExp(
+  ` src="${ASSET_REFERENCE_PREFIX}([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"`,
+)
+const ANY_SRC = / src="([^"]*)"/
+const SIGNED_URL = /[?&](?:amp;)?X-Amz-(?:Signature|Credential)=/i
+
 export function publicHtml(
   html: string,
-  publicPathOf: (pageId: string) => string | null,
   basePath: string,
+  resolve: {
+    /** where a mentioned page is served on this site, or null if it is not public */
+    pagePath: (pageId: string) => string | null
+    /** where a referenced picture is served on this site, or null if it cannot be handed out */
+    assetHref: (fileId: string) => string | null
+  },
 ): string {
-  const linked = html.replace(/href="\/quire\/[^"/]*\/([0-9a-fA-F-]{36})"/g, (_match, pageId: string) => {
-    const path = publicPathOf(pageId)
+  /*
+   * Every link into the application, in one pass, and the page id is not anchored on the closing
+   * quote.
+   *
+   * A page mention is not the only thing that writes one of these. `safeHref` passes any
+   * root-relative path through — it has to, that is what an internal link is — so an author who
+   * pastes a page's address out of their own address bar gets `/quire/<space>/<id>#block-7` or
+   * `…?comment=1` or `…/history`, and a pattern that required `"` straight after the id matched
+   * none of them and left the whole href alone. That put a live deep link into the private
+   * application, carrying the uuid of a page this same API answers 404 for, on the public internet.
+   *
+   * So: match the whole href, then ask whether it names a page — and if the answer is no for any
+   * reason at all (no id in it, an id that is not public, an id with something glued to it), drop
+   * the href rather than keep it. One pass rather than two, because `basePath` may legally be
+   * `/quire/` and a second sweep would eat the links the first one had just written.
+   */
+  const linked = html.replace(APP_LINK, (match) => {
+    const pageId = APP_PAGE_LINK.exec(match)?.[1] ?? null
+    const path = pageId === null ? null : resolve.pagePath(pageId)
     return path === null ? '' : `href="${escapeHtml(basePath + encodeURI(path))}"`
   })
-  return linked.replace(/ (?:data-)?id="[^"]*"/g, '')
+  const pictured = linked.replace(IMG_TAG, (tag) => {
+    const fileId = ASSET_SRC.exec(tag)?.[1] ?? null
+    if (fileId === null) {
+      const src = ANY_SRC.exec(tag)?.[1] ?? ''
+      return /^https?:\/\//i.test(src) && !SIGNED_URL.test(src) ? tag : ''
+    }
+    const href = resolve.assetHref(fileId)
+    // A function replacement, because `$&` and friends mean something in a replacement string and
+    // a base64url token is not somewhere to find that out.
+    return href === null ? '' : tag.replace(ASSET_SRC, () => ` src="${escapeHtml(href)}"`)
+  })
+  return pictured.replace(/ (?:data-)?id="[^"]*"/g, '')
 }
 
 /** A plain-text window around the first match, for a search result. */
@@ -250,6 +360,20 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
    */
   const aad = (workspaceId: string, publicationId: string) =>
     `quire.publication.unlock:${workspaceId}:${publicationId}`
+
+  /**
+   * The same mechanism, one scope wider, for a picture reference.
+   *
+   * Sealed to the **workspace** rather than to one publication, because a version is shared: the
+   * same page can be the root of two publications and its stored HTML is rendered once. Widening it
+   * costs nothing that matters — a reference only ever exists inside a page somebody has already
+   * been served, and resolving one still requires the file to be in the tree of the publication it
+   * is presented against.
+   */
+  const assetAad = (workspaceId: string) => `quire.publication.asset:${workspaceId.toLowerCase()}`
+
+  /** Recent password attempts per publication, for the fence described at `UNLOCK_ATTEMPTS`. */
+  const unlockAttempts = new Map<string, number[]>()
 
   async function hashPassword(plain: string): Promise<string> {
     const salt = randomBytes(16)
@@ -360,8 +484,19 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
      * the first: the first is that every query below carries the publication.
      */
     read<T>(workspaceId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+      /*
+       * Lower-cased before it is set, and that is not tidiness.
+       *
+       * `withWorkspace` writes the caller's string into `app.workspace_id` verbatim, and every RLS
+       * policy compares it as **text** against `workspace_id::text`, which Postgres renders in
+       * lower case. So an upper-case uuid in a public URL sets a GUC no policy can ever match: the
+       * whole surface returns nothing on a correctly locked-down instance and serves the site
+       * normally in development and CI, where the role is a superuser and bypasses the policies
+       * altogether. That is the direction that hides a bug rather than the one that shows it, and
+       * this is the only anonymous entry point, so it is normalised here.
+       */
       return kernel.database.withWorkspace(
-        workspaceId,
+        workspaceId.toLowerCase(),
         async (tx) => {
           await tx.execute(sql`set transaction read only`)
           return fn(tx)
@@ -414,9 +549,110 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
       }
     },
 
+    /**
+     * Weigh one password, and refuse to weigh too many.
+     *
+     * The counter is taken *before* the scrypt rather than after the answer, so a burst is stopped
+     * at the cost of a map lookup instead of buying the sender a key derivation each time. Only a
+     * publication that has a door is ever counted — a slug nobody has taken never reaches here, so
+     * the fence cannot be turned into a way of finding out which slugs exist.
+     */
     async checkPassword(pub: PublicationRow, password: string): Promise<boolean> {
       if (!pub.passwordHash) return false
+      const key = `${pub.workspaceId}:${pub.id}`
+      const now = Date.now()
+      if (unlockAttempts.size > UNLOCK_TRACKED_MAX) unlockAttempts.clear()
+      const recent = (unlockAttempts.get(key) ?? []).filter((at) => at > now - UNLOCK_WINDOW_MS)
+      if (recent.length >= UNLOCK_ATTEMPTS) {
+        unlockAttempts.set(key, recent)
+        throw new KernError('RATE_LIMITED', 'Too many attempts. Wait a minute and try again')
+      }
+      recent.push(now)
+      unlockAttempts.set(key, recent)
       return verifyPassword(password, pub.passwordHash)
+    },
+
+    /** The reference a published page carries in place of a picture's address. */
+    assetReferenceFor(workspaceId: string, fileId: string): string {
+      return kernel.secrets.encrypt(fileId, assetAad(workspaceId))
+    },
+
+    /**
+     * The bytes of one referenced picture, or `notFound` for every way of not having them.
+     *
+     * Two questions, and the second is the one that matters. The reference decrypts to a file id —
+     * authenticated, so it cannot be forged or moved between instances or workspaces — and then the
+     * file has to be *used by a page that is public in this publication right now*. Without that
+     * second half a reference lifted from one site would resolve against another in the same
+     * workspace, and a page opted out of publishing would keep serving its illustrations after its
+     * prose had gone.
+     *
+     * The containment question is asked of the stored HTML rather than of the document, because the
+     * stored HTML is what a reader is actually served: if the reference is not in it, no published
+     * page ever asked for this file.
+     */
+    async asset(
+      tx: Tx,
+      workspaceId: string,
+      nodes: PublicNode[],
+      reference: string,
+    ): Promise<{ contentType: string; bytes: string; maxAge: number }> {
+      const gone = () => new KernError('NOT_FOUND', 'There is no such picture on this site')
+      const versionIds = nodes.map((n) => n.version_id)
+      if (versionIds.length === 0) throw gone()
+
+      let fileId: string
+      try {
+        fileId = kernel.secrets.decrypt(reference, assetAad(workspaceId))
+      } catch {
+        throw gone()
+      }
+      if (!/^[0-9a-fA-F-]{36}$/.test(fileId)) throw gone()
+
+      const [used] = await tx
+        .select({ id: pageVersions.id })
+        .from(pageVersions)
+        .where(
+          and(
+            eq(pageVersions.workspaceId, workspaceId),
+            inArray(pageVersions.id, versionIds),
+            sql`${pageVersions.html} like ${`%${ASSET_REFERENCE_PREFIX}${fileId}%`}`,
+          ),
+        )
+        .limit(1)
+      if (!used) throw gone()
+
+      const file = await kernel
+        .call<{ key: string; mimeType: string } | null>('core.files.get', { id: fileId })
+        .catch(() => null)
+      if (!file?.key) throw gone()
+      const contentType = (file.mimeType || '').split(';')[0]?.trim().toLowerCase() ?? ''
+      if (!ASSET_TYPES.has(contentType)) throw gone()
+
+      const head = await kernel.storage.head(file.key).catch(() => null)
+      if ((head?.contentLength ?? 0) > MAX_ASSET_BYTES) {
+        kernel.log.warn(
+          { fileId, bytes: head?.contentLength, cap: MAX_ASSET_BYTES },
+          'a published picture is over the public cap and was not served',
+        )
+        throw gone()
+      }
+
+      const object = await kernel.storage.get(file.key).catch(() => null)
+      if (!object) throw gone()
+      const chunks: Buffer[] = []
+      let size = 0
+      for await (const chunk of object.body) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+        size += buf.length
+        // `head` is the fast refusal; this is the one that holds when the store did not answer it.
+        if (size > MAX_ASSET_BYTES) {
+          object.body.destroy()
+          throw gone()
+        }
+        chunks.push(buf)
+      }
+      return { contentType, bytes: Buffer.concat(chunks).toString('base64'), maxAge: ASSET_MAX_AGE }
     },
 
     /** Every publicly reachable page of this publication, addressed, root first. */
@@ -456,7 +692,15 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
       if (!row || row.html === null)
         throw new KernError('NOT_FOUND', 'There is no published page at this address')
       const pathById = new Map(nodes.map((n) => [n.id, n.path]))
-      return publicHtml(row.html, (id) => pathById.get(id) ?? null, basePath)
+      return publicHtml(row.html, basePath, {
+        pagePath: (id) => pathById.get(id) ?? null,
+        // Minted per read rather than stored, so the envelope can be re-keyed and so nothing
+        // durable in the database is a capability. `basePath` already ends in a slash.
+        assetHref: (fileId) =>
+          `${basePath}${PUBLIC_ASSET_SEGMENT}/${encodeURIComponent(
+            this.assetReferenceFor(workspaceId, fileId),
+          )}`,
+      })
     },
 
     /**
@@ -658,7 +902,9 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
         .where(and(eq(pageVersions.workspaceId, workspaceId), eq(pageVersions.id, versionId)))
         .limit(1)
       if (!row || row.html !== null) return
-      const html = await versions.html(tx, workspaceId, row.state)
+      // `referenced`, never `signed`: this drawing is *stored*, and a signed URL is the object's
+      // key with an hour on it. See the note on `html` in `versions.ts`.
+      const html = await versions.html(tx, workspaceId, row.state, { pictures: 'referenced' })
       await tx
         .update(pageVersions)
         .set({ html })

@@ -67,7 +67,9 @@ function open(entry: RecentEntry) {
               A relative time, not a date: this list is only ever read as "how long ago", and
               `relativeTime` renders it in the interface language rather than as a raw number.
             -->
-            <span class="when">{relativeTime(entry.viewedAt)}</span>
+            <span class="when" class:on-active={activePageId === entry.pageId}>
+              {relativeTime(entry.viewedAt)}
+            </span>
           {/snippet}
         </SidebarItem>
       {/each}
@@ -87,6 +89,17 @@ function open(entry: RecentEntry) {
 /*
  * Muted with a colour, never with `opacity` — and never smaller than 11.5px, which is where this
  * pane's ink stops being legible against its own background.
+ *
+ * **"Its own background" is two backgrounds, and the second one is the row you are standing on.**
+ * `SidebarItem` paints an active row `--kern-ink-900` and switches its text to
+ * `--kern-ink-inverse`; a timestamp that kept its own muted ink through that landed at **2.83:1 in
+ * light and 2.50:1 in dark** — mid-grey on near-black, on the row of the page the reader currently
+ * has open, in every locale. Off the active row the same colour is 4.88:1 or better against every
+ * ground this pane uses, which is why the token was never the thing that was wrong.
+ *
+ * So the active row inherits instead of overriding: `--kern-ink-inverse` on `--kern-ink-900` is
+ * 16.63:1 light and 15.52:1 dark. Inheriting rather than naming a second colour is also what keeps
+ * the two in step if the active row is ever repainted.
  */
 .when {
   flex: none;
@@ -94,5 +107,8 @@ function open(entry: RecentEntry) {
   font-size: 11.5px;
   color: var(--kern-ink-350);
   letter-spacing: -0.01em;
+}
+.when.on-active {
+  color: inherit;
 }
 </style>

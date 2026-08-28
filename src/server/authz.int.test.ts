@@ -408,6 +408,10 @@ const inputFor = (): Record<string, Record<string, unknown>> => {
     'public.search': { workspaceId: WS, slug: fixture.publicationSlug, q: 'something' },
     'public.sitemap': { workspaceId: WS, slug: fixture.publicationSlug },
     'public.robots': { workspaceId: WS, slug: fixture.publicationSlug },
+    // A reference that decrypts to nothing: NOT_FOUND for an administrator and for a stranger, the
+    // same as every other way of not having a picture. What the sweep is asking here is only that
+    // being signed in does not change the answer.
+    'public.asset': { workspaceId: WS, slug: fixture.publicationSlug, asset: 'not-a-reference' },
     // The fixture publication has no password, so this is a door that is not there: NOT_FOUND, for
     // an administrator and for a stranger alike, which is what the pass below compares.
     'public.unlock': { workspaceId: WS, slug: fixture.publicationSlug, password: 'not-the-password' },

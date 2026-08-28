@@ -13,6 +13,19 @@ type VersionRow = typeof pageVersions.$inferSelect
 /** How much of the prose a version list shows without loading the document. */
 const PREVIEW = 160
 
+/**
+ * What a picture looks like in HTML that is stored rather than shown.
+ *
+ * A signed storage URL cannot be stored: it is the object's key, which carries the tenant's
+ * workspace uuid and the file's own uuid, and it stops working an hour after it is written. So the
+ * public render leaves a root-relative reference the publication layer resolves at read time —
+ * `publicHtml` turns it into an address on the published site, and drops the picture outright if it
+ * cannot. It has to survive `safeHref`, which is why it is a path and not a scheme of its own, and
+ * it starts with `__` so no slug the server ever invents can collide with it.
+ */
+export const ASSET_REFERENCE_PREFIX = '/__quire-asset/'
+export const assetReference = (fileId: string): string => `${ASSET_REFERENCE_PREFIX}${fileId}`
+
 export function toVersion(row: VersionRow, publishedId: string | null): PageVersion {
   return {
     id: row.id,
@@ -237,8 +250,20 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
      * string; a picture whose file has been deleted, or whose storage is not configured, is dropped
      * rather than drawn as a broken image; a mention of a purged page stays as its label. None of
      * those is worth turning a read of somebody's history into an error.
+     *
+     * **`pictures` is a security parameter, not a performance one.** `'signed'` is right for a
+     * person reading their own history over an authenticated request: the URL is theirs, it is
+     * short-lived, and it is never stored. `'referenced'` is the only thing that may be *written
+     * down*, because a signed URL is the storage key — the tenant's workspace uuid and the file's
+     * own uuid — and it expires an hour after it is minted. The publication render stores its
+     * output, so it uses `'referenced'` and `publicHtml` resolves the reference per read.
      */
-    async html(tx: Tx, workspaceId: string, state: Buffer | Uint8Array | null): Promise<string> {
+    async html(
+      tx: Tx,
+      workspaceId: string,
+      state: Buffer | Uint8Array | null,
+      opts: { pictures?: 'signed' | 'referenced' } = {},
+    ): Promise<string> {
       const doc = pageDocFromState(state)
       if (!doc) return ''
       const { fileIds, pageIds } = referencesIn(doc)
@@ -254,23 +279,31 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
       }
 
       const sources = new Map<string, string>()
-      await Promise.all(
-        fileIds.map(async (id) => {
-          try {
-            const file = await kernel.call<{ key: string; mimeType: string } | null>('core.files.get', { id })
-            if (!file?.key) return
-            sources.set(
-              id,
-              await kernel.storage.presignGet(file.key, {
-                disposition: 'inline',
-                contentType: file.mimeType,
-              }),
-            )
-          } catch (err) {
-            kernel.log.warn({ err: String(err), fileId: id }, 'could not sign a picture for a version')
-          }
-        }),
-      )
+      if (opts.pictures === 'referenced') {
+        // No storage round trip at all: the reference is the file id, and whether the object is
+        // still there is a question for the read that serves it rather than for the render.
+        for (const id of fileIds) sources.set(id, assetReference(id))
+      } else {
+        await Promise.all(
+          fileIds.map(async (id) => {
+            try {
+              const file = await kernel.call<{ key: string; mimeType: string } | null>('core.files.get', {
+                id,
+              })
+              if (!file?.key) return
+              sources.set(
+                id,
+                await kernel.storage.presignGet(file.key, {
+                  disposition: 'inline',
+                  contentType: file.mimeType,
+                }),
+              )
+            } catch (err) {
+              kernel.log.warn({ err: String(err), fileId: id }, 'could not sign a picture for a version')
+            }
+          }),
+        )
+      }
 
       return renderPageDoc(doc, {
         fileSrc: (id) => sources.get(id) ?? null,

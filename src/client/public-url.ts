@@ -16,16 +16,25 @@
  * a workspace. The cost is that a workspace whose slug is exactly `p` would collide, which is why
  * the segment is here as a constant rather than typed out at three call sites.
  *
- * The workspace is named by **slug, not id**. Both are equally public — the id is already in the
- * API path this resolves to — but one of them is a uuid, and a customer publishing a handbook is
- * publishing a URL they will print. Resolving the slug is one lookup the route layer already does
- * for every other page in the product.
+ * **The workspace is named by id, and it was named by slug until that address stopped resolving.**
+ * A slug is the nicer half of the trade — a customer publishing a handbook is publishing a URL they
+ * will print — and it is only nicer if it works. Turning a slug into the workspace id the public
+ * procedures require is a lookup nothing can do signed out: every workspace read in `core` is
+ * behind a membership check, and a published site has no member reading it. So the route layer
+ * accepts the id form and refuses everything else, and this dialog was handing customers an address
+ * that answered 404 in every deployment that is not the mock — measured by copying the link out of
+ * the share dialog and fetching it.
+ *
+ * The id is not a secret: it is already the first segment of the API path the address resolves to,
+ * and it names a tenant rather than anything inside one. When `core` grows a signed-out
+ * `workspaces.publicBySlug`, the slug form becomes correct as well and this is the one function
+ * that has to change.
  */
 export const PUBLIC_SITE_PREFIX = 'p'
 
 export interface PublicSiteAddress {
-  /** the workspace's slug, as it appears in every other Kern URL */
-  workspaceSlug: string
+  /** the workspace's id, which is what the public procedures resolve a tenant by */
+  workspaceId: string
   /** the publication's slug */
   slug: string
   /**
@@ -36,14 +45,16 @@ export interface PublicSiteAddress {
 }
 
 /**
- * The `basePath` argument `public.page` validates and builds its inter-page links from.
+ * `/p/<workspace>/<publication>` — **no trailing slash**, both segments already encoded.
  *
- * Starts and ends with `/`, unreserved segments only — the contract refuses anything else, and the
- * refusal is the point: `//evil.example/` is a protocol-relative URL wearing the costume of a local
- * path, and a caller who could set it would repoint every link on somebody's published site.
+ * The route serves the canonical form without one and answers the trailing-slash form with a 308,
+ * so a base that ended in `/` put an extra hop into every link a customer printed or pasted.
+ *
+ * This is not the `basePath` argument `public.page` takes: that one has to start *and* end with a
+ * slash, and the route layer builds it from this by adding one.
  */
-export function publicSiteBasePath({ workspaceSlug, slug }: PublicSiteAddress): string {
-  return `/${PUBLIC_SITE_PREFIX}/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(slug)}/`
+export function publicSiteBasePath({ workspaceId, slug }: PublicSiteAddress): string {
+  return `/${PUBLIC_SITE_PREFIX}/${encodeURIComponent(workspaceId)}/${encodeURIComponent(slug)}`
 }
 
 /**
@@ -60,5 +71,6 @@ export function publicSiteUrl(address: PublicSiteAddress, origin?: string): stri
     .filter((segment) => segment.length > 0)
     .map(encodeURIComponent)
     .join('/')
-  return `${root}${publicSiteBasePath(address)}${trail}`
+  const base = `${root}${publicSiteBasePath(address)}`
+  return trail ? `${base}/${trail}` : base
 }

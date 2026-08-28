@@ -314,7 +314,7 @@ const publicVia = $derived.by((): { slug: string; root: boolean } | null => {
   return null
 })
 
-const publicUrl = $derived(publicVia ? publicSiteUrl({ workspaceSlug, slug: publicVia.slug }) : '')
+const publicUrl = $derived(publicVia ? publicSiteUrl({ workspaceId, slug: publicVia.slug }) : '')
 
 // -----------------------------------------------------------------------------------------------
 // Watching, recording, and the way this page is deleted
@@ -755,13 +755,7 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
     publishedVersionId={doc.publishedVersionId}
   />
 
-  <PublishDialog
-    bind:open={shareOpen}
-    {workspaceId}
-    {workspaceSlug}
-    spaceId={doc.spaceId}
-    page={doc}
-  />
+  <PublishDialog bind:open={shareOpen} {workspaceId} spaceId={doc.spaceId} page={doc} />
 
   <!--
     The body says nothing about numbers until it knows them. Naming a count before the tree has
@@ -835,8 +829,14 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
 }
 /*
  * The one chip that is a control, so it is the one that reads as one — a tinted pill with a hit
- * area a finger can find. `--kern-accent-text` rather than `--kern-accent`: the flat accent is a
- * fill colour and does not clear 4.5:1 as text on its own tint in either theme.
+ * area a finger can find.
+ *
+ * `--kern-accent-deep`, and the arithmetic rather than the impression. On `--kern-accent-tint` the
+ * flat accent is a fill colour and nowhere near readable; `--kern-accent-text` looks like the
+ * answer and measures **4.22:1 in the light palette** (#a85a18 on #f3e9da) against the 4.5:1 this
+ * text needs at 13px/500 — it only passes in the dark one, which is how it shipped. The deep tone
+ * is 5.94:1 light and 5.95:1 dark, and 6.01/5.69 on the hover tint. Computed against the surface
+ * this actually sits on, in both palettes, because a colour pair is arithmetic and not taste.
  */
 .chip.public {
   gap: 5px;
@@ -844,7 +844,7 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
   padding-inline: 8px;
   border-radius: var(--kern-r-full);
   background: var(--kern-accent-tint);
-  color: var(--kern-accent-text);
+  color: var(--kern-accent-deep);
   font-weight: 500;
   text-decoration: none;
 }

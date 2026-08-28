@@ -15,7 +15,7 @@ import { implement } from '@orpc/server'
 import type { Publication, PublicBreadcrumb } from '../contract/index.js'
 import { MODULE_ID, quireContract, quireEvents } from '../contract/index.js'
 import { toComment } from './services/comments.js'
-import { quireServices } from './services/index.js'
+import { quireServices, resolveWorkspaceSegment } from './services/index.js'
 import { createNotify } from './services/notify.js'
 import { documentNameOf, toPage } from './services/pages.js'
 import { type PublicNode, toPublication } from './services/publications.js'
@@ -60,9 +60,23 @@ const publicSurface = o.middleware(async ({ context, next }, input) => {
    * signed-out stranger is owed no more than that. `.catch` covers the rest for the same reason: a
    * settings lookup that fails must not become a 500 either.
    */
-  if (typeof workspaceId !== 'string' || !UUID.test(workspaceId))
+  if (typeof workspaceId !== 'string')
     throw new KernError('NOT_FOUND', 'There is no published site at this address')
-  const enabled = await context.kernel.isModuleEnabled(workspaceId, MODULE_ID).catch(() => false)
+  /*
+   * A public URL names its workspace by **slug**, because the address the share dialog copies is
+   * meant to be sent to somebody — and a uuid in a link is a receipt, not an address. This
+   * middleware is the first thing that sees the segment, so it is also the first thing that used to
+   * refuse it: a `UUID.test` here answered 404 for the module's own published URLs while the same
+   * site served perfectly under its id. Resolving happens here so that `isModuleEnabled` below is
+   * asked about a workspace rather than about a slug, whose schema is `z.uuid()` and would 500.
+   *
+   * A slug that names no workspace, and a slug that names one with no such publication, both reach
+   * the same 404 as a workspace nobody has — so this resolves an address without answering "does
+   * this workspace exist" for anyone who asks.
+   */
+  const resolved = await resolveWorkspaceSegment(context.kernel, workspaceId).catch(() => null)
+  if (!resolved) throw new KernError('NOT_FOUND', 'There is no published site at this address')
+  const enabled = await context.kernel.isModuleEnabled(resolved, MODULE_ID).catch(() => false)
   if (!enabled) throw new KernError('NOT_FOUND', 'There is no published site at this address')
   return next()
 })
@@ -1212,13 +1226,13 @@ export function implement_(kernel: Kernel) {
      */
     public: {
       site: open.public.site.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const pub = await svc.publications.bySlug(tx, ws, input.slug)
           const theme = pub.theme as Publication['theme']
           if (!(await svc.publications.unlocked(pub, input.token)))
             return { slug: pub.slug, theme, locked: true, site: null }
 
-          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const nodes = await svc.publications.tree(tx, ws, pub)
           // No root means the root page is archived, trashed, opted out, unpublished or not a page.
           // The publication row survives that; the site does not.
           const root = nodes[0]
@@ -1249,15 +1263,15 @@ export function implement_(kernel: Kernel) {
       ),
 
       page: open.public.page.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const { nodes } = await servable(tx, ws, input.slug, input.token)
           const node = svc.publications.find(nodes, input.path)
           return {
             path: node.path,
             title: node.title || 'Untitled',
             icon: node.icon,
             coverUrl: node.cover_url,
-            html: await svc.publications.html(tx, input.workspaceId, node, nodes, input.basePath),
+            html: await svc.publications.html(tx, ws, node, nodes, input.basePath),
             /*
              * The version's timestamp, not the page's. `pages.updated_at` moves every time somebody
              * types in the draft, so publishing it would tell the internet when an unpublished
@@ -1271,9 +1285,9 @@ export function implement_(kernel: Kernel) {
       ),
 
       search: open.public.search.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
-          const hits = await svc.publications.search(tx, input.workspaceId, nodes, input.q, input.limit)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const { nodes } = await servable(tx, ws, input.slug, input.token)
+          const hits = await svc.publications.search(tx, ws, nodes, input.q, input.limit)
           return {
             items: hits.map((hit) => ({
               path: hit.node.path,
@@ -1285,13 +1299,13 @@ export function implement_(kernel: Kernel) {
       ),
 
       sitemap: open.public.sitemap.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const pub = await svc.publications.bySlug(tx, ws, input.slug)
           // A sitemap exists for crawlers, so a site nobody is meant to crawl has an empty one
           // rather than a private one. Answering with the tree here would put every path of a
           // password-protected handbook in a file whose whole purpose is to be fetched by robots.
           if (pub.passwordHash || !pub.indexable) return { entries: [] }
-          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const nodes = await svc.publications.tree(tx, ws, pub)
           // A publication whose root has since been trashed serves nothing, so it is the same 404
           // as a slug nobody took — an empty sitemap here would say "this address is a site" to a
           // crawler that has just been told the opposite by every other procedure.
@@ -1306,7 +1320,7 @@ export function implement_(kernel: Kernel) {
       ),
 
       robots: open.public.robots.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
           /*
            * The one place a missing publication is not an error: a crawler asking about a slug
            * nobody has taken, one that has expired, and one behind a password have to get the same
@@ -1319,9 +1333,9 @@ export function implement_(kernel: Kernel) {
            * distinguish anything was the only one admitting that the slug existed. It is the walk
            * rather than the row that decides, which is why the tree is read here.
            */
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug).catch(() => null)
+          const pub = await svc.publications.bySlug(tx, ws, input.slug).catch(() => null)
           if (!pub || pub.passwordHash || !pub.indexable) return { indexable: false, sitemapPath: null }
-          const nodes = await svc.publications.tree(tx, input.workspaceId, pub)
+          const nodes = await svc.publications.tree(tx, ws, pub)
           if (!nodes[0]) return { indexable: false, sitemapPath: null }
           // Relative to whatever prefix the route layer serves this site under; the module has no
           // way to know that, and guessing would put a wrong absolute URL in a robots file.
@@ -1339,15 +1353,15 @@ export function implement_(kernel: Kernel) {
        * against another in the same workspace.
        */
       asset: open.public.asset.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const { nodes } = await servable(tx, input.workspaceId, input.slug, input.token)
-          return svc.publications.asset(tx, input.workspaceId, nodes, input.asset)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const { nodes } = await servable(tx, ws, input.slug, input.token)
+          return svc.publications.asset(tx, ws, nodes, input.asset)
         }),
       ),
 
       unlock: open.public.unlock.handler(({ input }) =>
-        svc.publications.read(input.workspaceId, async (tx) => {
-          const pub = await svc.publications.bySlug(tx, input.workspaceId, input.slug)
+        svc.publications.read(input.workspaceId, async (tx, ws) => {
+          const pub = await svc.publications.bySlug(tx, ws, input.slug)
           // A site with no password has no door to open, and saying so would confirm the slug
           // exists to somebody who has not been told anything else about it.
           if (!pub.passwordHash)

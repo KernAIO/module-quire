@@ -32,6 +32,22 @@ import {
 } from './properties.js'
 
 const ws = z.object({ workspaceId: WorkspaceId })
+
+/**
+ * What names the workspace in a **public** URL: its id or its slug.
+ *
+ * The address the share dialog copies is `/p/<workspace-slug>/<publication-slug>/`, because a uuid
+ * in a link somebody sends a colleague is a receipt rather than an address. Every `public.*`
+ * procedure still needs an id before it touches `mod_quire` — anonymous means no principal, not no
+ * tenant — so the slug is resolved at the one anonymous entry point and everything downstream is
+ * unchanged. Widened here rather than parsed in the handler because a `z.uuid()` rejects the slug
+ * before any handler runs, which is how this shipped answering 404 for its own published URLs.
+ */
+const WorkspaceSegment = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[0-9a-zA-Z][0-9a-zA-Z-]*$/, 'not a workspace id or slug')
 const t = (...tags: string[]) => ({ tags })
 
 /** The page fields a shortcut row draws, so a sidebar is one request rather than one per entry. */
@@ -795,7 +811,7 @@ export const quireContract = {
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}', ...t('public') })
       .input(
         z.object({
-          workspaceId: WorkspaceId,
+          workspaceId: WorkspaceSegment,
           slug: Publication.shape.slug,
           token: z.string().max(4096).nullable().default(null),
         }),
@@ -811,7 +827,7 @@ export const quireContract = {
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/page', ...t('public') })
       .input(
         z.object({
-          workspaceId: WorkspaceId,
+          workspaceId: WorkspaceSegment,
           slug: Publication.shape.slug,
           /** '' is the front page */
           path: z.string().max(1024).default(''),
@@ -832,7 +848,7 @@ export const quireContract = {
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/search', ...t('public') })
       .input(
         z.object({
-          workspaceId: WorkspaceId,
+          workspaceId: WorkspaceSegment,
           slug: Publication.shape.slug,
           q: z.string().min(2).max(200),
           limit: z.number().int().min(1).max(50).default(20),
@@ -846,7 +862,7 @@ export const quireContract = {
      */
     sitemap: baseContract
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/sitemap', ...t('public') })
-      .input(z.object({ workspaceId: WorkspaceId, slug: Publication.shape.slug }))
+      .input(z.object({ workspaceId: WorkspaceSegment, slug: Publication.shape.slug }))
       .output(z.object({ entries: z.array(PublicSitemapEntry) })),
     /**
      * The one procedure here that never distinguishes one slug from another.
@@ -859,7 +875,7 @@ export const quireContract = {
      */
     robots: baseContract
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/robots', ...t('public') })
-      .input(z.object({ workspaceId: WorkspaceId, slug: Publication.shape.slug }))
+      .input(z.object({ workspaceId: WorkspaceSegment, slug: Publication.shape.slug }))
       .output(z.object({ indexable: z.boolean(), sitemapPath: z.string().nullable() })),
     /**
      * The bytes of one picture on a published page.
@@ -879,7 +895,7 @@ export const quireContract = {
       .route({ method: 'GET', path: '/public/{workspaceId}/{slug}/asset', ...t('public') })
       .input(
         z.object({
-          workspaceId: WorkspaceId,
+          workspaceId: WorkspaceSegment,
           slug: Publication.shape.slug,
           asset: z.string().min(1).max(2048),
           token: z.string().max(4096).nullable().default(null),
@@ -891,7 +907,7 @@ export const quireContract = {
       .route({ method: 'POST', path: '/public/{workspaceId}/{slug}/unlock', ...t('public') })
       .input(
         z.object({
-          workspaceId: WorkspaceId,
+          workspaceId: WorkspaceSegment,
           slug: Publication.shape.slug,
           password: z.string().min(1).max(200),
         }),

@@ -47,5 +47,7 @@ export * from './databases.js'
 export * from './organisation.js'
 export * from './pages.js'
 export * from './publications.js'
+/** The public surface resolves a workspace slug before anything touches the schema. */
+export { resolveWorkspaceSegment } from './publications.js'
 export * from './spaces.js'
 export * from './versions.js'

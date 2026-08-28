@@ -37,6 +37,42 @@ import { PUBLIC_ASSET_SEGMENT } from '../../contract/index.js'
 import { escapeHtml } from '../render.js'
 import { pages, pageVersions, publications } from '../schema.js'
 import type { QuireAccess } from './access.js'
+
+/** A workspace segment is either its uuid or its slug; anything else is not an address. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
+
+/**
+ * A public URL names its workspace by slug or by id; every query needs the id.
+ *
+ * Exported because two places need it and they are on opposite sides of the module: the anonymous
+ * middleware in `_impl.ts`, which is the first thing to see the segment and must not hand a slug to
+ * `isModuleEnabled` (whose schema is `z.uuid()`), and `publications.read`, which sets the workspace
+ * for row-level security.
+ *
+ * Resolving it inside this module rather than in `core` is what stops it being an oracle. Core
+ * could only answer "is there a workspace called this" — a fact about private workspaces too.
+ * Here, a slug naming a workspace with no such publication reaches exactly the same `NOT_FOUND` as
+ * a slug nobody has taken, so the answer gives away nothing a published site does not.
+ *
+ * Returns null rather than throwing; every caller turns that into the one 404.
+ */
+export async function resolveWorkspaceSegment(kernel: Kernel, segment: string): Promise<string | null> {
+  if (UUID_RE.test(segment)) return segment.toLowerCase()
+  if (!SLUG_RE.test(segment)) return null
+  try {
+    const found = (await kernel.call('core.workspaces.list', { q: segment, limit: 50 })) as
+      | { items?: { id: string; slug: string }[] }
+      | { id: string; slug: string }[]
+    const items = Array.isArray(found) ? found : (found?.items ?? [])
+    // `q` is a search over names; only an exact slug is an address.
+    return items.find((w) => w.slug === segment)?.id?.toLowerCase() ?? null
+  } catch {
+    // Core unreachable is not "no such site", but the reader is owed one answer either way.
+    return null
+  }
+}
+
 import { ASSET_REFERENCE_PREFIX, type QuireVersions } from './versions.js'
 
 const scrypt = promisify(scryptCb) as (
@@ -483,7 +519,32 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
      * and covers `pages` and `page_versions` as well as `publications`. It is the second fence, not
      * the first: the first is that every query below carries the publication.
      */
-    read<T>(workspaceId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+    /**
+     * A public URL names its workspace by slug; every query below needs its id.
+     *
+     * The address the share dialog copies is `/p/<workspace-slug>/<publication-slug>/`, because a
+     * uuid in a link somebody is meant to send to a colleague is not an address, it is a receipt.
+     * The `public.*` procedures take an id and have to: anonymous means no principal, so nothing
+     * downstream can resolve a slug for itself.
+     *
+     * Resolving it here rather than in `core` is what stops it becoming an oracle. Core could only
+     * answer "is there a workspace called this", which is true whether or not anybody publishes —
+     * and that is a fact about a private workspace. Here, a slug that resolves to a workspace with
+     * no publication of that name reaches exactly the same `NOT_FOUND` as a slug nobody has taken,
+     * so the answer carries no information a published site does not already give away.
+     *
+     * Returns null rather than throwing: the caller turns every failure into the one 404.
+     */
+    resolveWorkspace: (segment: string) => resolveWorkspaceSegment(kernel, segment),
+
+    async read<T>(segment: string, fn: (tx: Tx, workspaceId: string) => Promise<T>): Promise<T> {
+      /*
+       * The segment is resolved here, once, rather than in each of the eight handlers — and a
+       * segment that resolves to nothing raises the same `NOT_FOUND` those handlers raise for a
+       * page nobody published, so the two are indistinguishable from outside.
+       */
+      const workspaceId = await this.resolveWorkspace(segment)
+      if (!workspaceId) throw KernError.notFound('There is no published site at this address')
       /*
        * Lower-cased before it is set, and that is not tidiness.
        *
@@ -496,10 +557,10 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
        * this is the only anonymous entry point, so it is normalised here.
        */
       return kernel.database.withWorkspace(
-        workspaceId.toLowerCase(),
+        workspaceId,
         async (tx) => {
           await tx.execute(sql`set transaction read only`)
-          return fn(tx)
+          return fn(tx, workspaceId)
         },
         { userId: null },
       )

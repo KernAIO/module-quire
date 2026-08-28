@@ -1,6 +1,6 @@
 {
   "name": "@kernhq/module-quire",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Kern Quire: collaborative documents, spaces and page trees",
   "homepage": "https://github.com/KernAIO/module-quire#readme",
   "license": "AGPL-3.0-only",

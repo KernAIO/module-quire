@@ -5,7 +5,13 @@ import type {
   Database,
   DatabaseRef,
   Row as DatabaseRow,
+  ExportFormat,
+  ExportJob,
+  ExportScope,
   FavoriteEntry,
+  ImportJob,
+  ImportReportEntry,
+  ImportSource,
   Label,
   LabelColour,
   Page,
@@ -18,6 +24,7 @@ import type {
   RecentEntry,
   RowRef,
   Space,
+  TransferCounts,
   View,
   ViewConfig,
   ViewKind,
@@ -918,6 +925,217 @@ export function createMockQuireApi() {
     return String(left).localeCompare(String(right))
   }
 
+  // ----------------------------------------------------------------------------------------------
+  // Getting work in and out
+  // ----------------------------------------------------------------------------------------------
+
+  /**
+   * A transfer is a job, so the mock has to behave like one rather than answer instantly.
+   *
+   * Every screen here is a progress bar, a spinner and a report that arrives afterwards, and a mock
+   * that returned `done` from `start` would leave all three unreachable — the demo and the
+   * end-to-end sweep would only ever see the finished state. So a started job carries a real
+   * `createdAt` and its state is **computed from how long ago that was**: queued for the first
+   * second, running while it counts, then done. No timers, so nothing keeps running after the tab
+   * that made it has gone.
+   *
+   * The seeded rows cover the three states somebody has to be able to look at without waiting: a
+   * finished export with a file, a failed one with a reason worth reading, and a finished import
+   * whose report has all three outcomes in it.
+   */
+  const EXPORT_STEP_MS = 320
+  const EXPORT_START_MS = 800
+  const IMPORT_READ_MS = 3200
+
+  /**
+   * A valid, empty zip — the 22-byte end-of-central-directory record and nothing else.
+   *
+   * There is no object storage behind `dev:mock`, so a download has to be something the browser can
+   * actually save; a `data:` URL is the only address that works without one. Empty rather than
+   * fabricated: a demo zip full of invented pages is a file somebody opens expecting their handbook.
+   */
+  const EMPTY_ZIP = 'data:application/zip;base64,UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA=='
+
+  const countsOf = (report: ImportReportEntry[]): TransferCounts => ({
+    total: report.length,
+    done: report.filter((r) => r.outcome === 'imported').length,
+    skipped: report.filter((r) => r.outcome === 'skipped').length,
+    failed: report.filter((r) => r.outcome === 'failed').length,
+  })
+
+  const exportJobs: ExportJob[] = [
+    {
+      id: uid(701),
+      workspaceId: '' as ExportJob['workspaceId'],
+      requestedBy: ME as ExportJob['requestedBy'],
+      scope: 'space',
+      targetId: uid(1),
+      format: 'markdown',
+      state: 'done',
+      fileId: uid(781),
+      error: null,
+      counts: { total: 8, done: 7, skipped: 1, failed: 0 },
+      createdAt: iso(72e5),
+      finishedAt: iso(71e5),
+    },
+    {
+      id: uid(702),
+      workspaceId: '' as ExportJob['workspaceId'],
+      requestedBy: ME as ExportJob['requestedBy'],
+      scope: 'subtree',
+      targetId: uid(102),
+      format: 'pdf',
+      state: 'failed',
+      fileId: null,
+      // The failure worth seeding is the one an operator can act on, written the way the service
+      // writes it: the PDF renderer is a separate container, and a stack with it switched off is by
+      // far the most common reason a PDF export dies.
+      error: 'The PDF service did not answer at http://gotenberg:3000 (connect ECONNREFUSED)',
+      counts: { total: 3, done: 3, skipped: 0, failed: 0 },
+      createdAt: iso(864e5),
+      finishedAt: iso(8636e4),
+    },
+  ]
+
+  /** One report with all three outcomes in it, because that is the whole point of the screen. */
+  const seededImportReport: ImportReportEntry[] = [
+    { path: 'Company Handbook 8f2c41d0.md', outcome: 'imported', pageId: uid(101), reason: null },
+    {
+      path: 'Company Handbook 8f2c41d0/Getting started 5b91aa02.md',
+      outcome: 'imported',
+      pageId: uid(103),
+      reason: null,
+    },
+    {
+      path: 'Company Handbook 8f2c41d0/Tasks 71cc9e10.csv',
+      outcome: 'imported',
+      pageId: uid(110),
+      // The one `imported` row that carries a reason, exactly as the server writes it: a CSV becomes
+      // a database, and the column types it guessed are the thing somebody has to check.
+      reason:
+        'the first column, Name, became each row’s title; Status: read as a select with 3 choices, from 4 of 4 values; Due: read as a date; Done: read as a checkbox',
+    },
+    {
+      path: 'Company Handbook 8f2c41d0/Tasks 71cc9e10_all.csv',
+      outcome: 'skipped',
+      pageId: null,
+      reason: 'a second view of the same database; its rows came from “Tasks 71cc9e10.csv”',
+    },
+    {
+      path: 'Company Handbook 8f2c41d0/diagram.png',
+      outcome: 'skipped',
+      pageId: null,
+      reason: 'a picture, which an import cannot yet attach to a page',
+    },
+    {
+      path: '__MACOSX/._Company Handbook 8f2c41d0.md',
+      outcome: 'skipped',
+      pageId: null,
+      reason: 'a file the operating system added to the archive',
+    },
+    {
+      path: 'Company Handbook 8f2c41d0/Expenses 04ab7731.md',
+      outcome: 'failed',
+      pageId: null,
+      reason: 'its checksum does not match, so the file is damaged',
+    },
+    {
+      path: 'Archive/Old wiki 22b0cc71.md',
+      outcome: 'failed',
+      pageId: null,
+      reason:
+        'nothing in the archive is at this path, so the link to it in “Company Handbook” is now plain text',
+    },
+  ]
+
+  const importJobs: ImportJob[] = [
+    {
+      id: uid(711),
+      workspaceId: '' as ImportJob['workspaceId'],
+      requestedBy: ME as ImportJob['requestedBy'],
+      source: 'notion',
+      targetId: uid(1),
+      sourceFileId: uid(791),
+      state: 'done',
+      error: null,
+      counts: countsOf(seededImportReport),
+      report: seededImportReport,
+      createdAt: iso(1728e5),
+      finishedAt: iso(17274e4),
+    },
+  ]
+
+  /** Move a queued export along by however long it has been sitting there. */
+  function advanceExport(row: ExportJob) {
+    if (row.state === 'done' || row.state === 'failed') return
+    const elapsed = Date.now() - new Date(row.createdAt).getTime()
+    if (elapsed < EXPORT_START_MS) return
+    const total = row.counts.total || 12
+    const seen = Math.min(total, Math.floor((elapsed - EXPORT_START_MS) / EXPORT_STEP_MS))
+    // One page withheld, so the "some pages were left out" sentence is reachable in the demo.
+    const skipped = Math.min(total > 4 ? 1 : 0, seen)
+    row.counts = { total, done: seen - skipped, skipped, failed: 0 }
+    row.state = seen >= total ? 'done' : 'running'
+    if (row.state === 'done') {
+      row.fileId = row.fileId ?? nextId()
+      row.finishedAt = new Date().toISOString()
+    }
+  }
+
+  /**
+   * Move a queued import along, and — when it lands — actually write the pages.
+   *
+   * The pages matter: an import whose report says three pages arrived and whose sidebar is unchanged
+   * is a demo of the wrong thing, and "Open the space" would lead somewhere that has not moved.
+   */
+  function advanceImport(row: ImportJob) {
+    if (row.state === 'done' || row.state === 'failed') return
+    const elapsed = Date.now() - new Date(row.createdAt).getTime()
+    if (elapsed < EXPORT_START_MS) return
+    if (elapsed < IMPORT_READ_MS) {
+      row.state = 'running'
+      return
+    }
+    const made = ['Company Handbook', 'Getting started', 'How we work'].map((title, at) => {
+      const created = page(++seq, row.targetId, title, `z${at}`, null, {})
+      created.id = uid(seq)
+      created.createdAt = new Date().toISOString()
+      created.updatedAt = created.createdAt
+      pages.push(created)
+      return created.id
+    })
+    row.report = [
+      { path: 'Company Handbook 8f2c41d0.md', outcome: 'imported', pageId: made[0] ?? null, reason: null },
+      {
+        path: 'Company Handbook 8f2c41d0/Getting started 5b91aa02.md',
+        outcome: 'imported',
+        pageId: made[1] ?? null,
+        reason: null,
+      },
+      {
+        path: 'Company Handbook 8f2c41d0/How we work 90ff1a44.md',
+        outcome: 'imported',
+        pageId: made[2] ?? null,
+        reason: null,
+      },
+      {
+        path: 'Company Handbook 8f2c41d0/logo.png',
+        outcome: 'skipped',
+        pageId: null,
+        reason: 'a picture, which an import cannot yet attach to a page',
+      },
+      {
+        path: 'Company Handbook 8f2c41d0/Notes 04ab7731.md',
+        outcome: 'failed',
+        pageId: null,
+        reason: 'its checksum does not match, so the file is damaged',
+      },
+    ]
+    row.counts = countsOf(row.report)
+    row.state = 'done'
+    row.finishedAt = new Date().toISOString()
+  }
+
   return {
     spaces: {
       list: async ({ includeArchived = false }: { includeArchived?: boolean } = {}) =>
@@ -1377,6 +1595,106 @@ export function createMockQuireApi() {
           replies: rest.map((c) => structuredClone(c)),
           resolved,
         }
+      },
+    },
+
+    /**
+     * Taking work out.
+     *
+     * `list` and `get` advance every job before answering, which is what makes the progress bar move
+     * in `dev:mock` — there is no worker here, so the passage of time is the worker. `docx` is
+     * refused exactly as the server refuses it, with the same shape of message: a mock that quietly
+     * accepted it would make the one format the product does not have look like the one it does.
+     */
+    exports: {
+      start: async (input: { scope: ExportScope; targetId: string; format: ExportFormat }) => {
+        if (input.format === 'docx')
+          throw Object.assign(
+            new Error(
+              'Word export is not available yet. Export as HTML or PDF, both of which Word opens, ' +
+                'or as Markdown to move the pages somewhere else.',
+            ),
+            { code: 'BAD_REQUEST' },
+          )
+        if (input.scope === 'space') {
+          if (!spaces.some((s) => s.id === input.targetId)) throw notFound('Space')
+        } else found(input.targetId)
+        const row: ExportJob = {
+          id: nextId(),
+          workspaceId: '' as ExportJob['workspaceId'],
+          requestedBy: ME as ExportJob['requestedBy'],
+          scope: input.scope,
+          targetId: input.targetId,
+          format: input.format,
+          state: 'queued',
+          fileId: null,
+          error: null,
+          counts: { total: 0, done: 0, skipped: 0, failed: 0 },
+          createdAt: new Date().toISOString(),
+          finishedAt: null,
+        }
+        exportJobs.unshift(row)
+        return { ...row, downloadUrl: null }
+      },
+
+      get: async ({ jobId }: { jobId: string }) => {
+        const row = exportJobs.find((j) => j.id === jobId)
+        if (!row) throw notFound('Export')
+        advanceExport(row)
+        /*
+         * The link is minted here and not stored, exactly as the server does it — the download is a
+         * signed URL that expires, so a row carrying one would be a row carrying an address that
+         * stops working. A PDF export hands back the same empty zip: there is nothing to render.
+         */
+        return { ...row, downloadUrl: row.state === 'done' ? EMPTY_ZIP : null }
+      },
+
+      list: async ({ limit = 20 }: { limit?: number } = {}) => {
+        for (const row of exportJobs) advanceExport(row)
+        return exportJobs.slice(0, limit).map((row) => ({ ...row }))
+      },
+    },
+
+    /**
+     * Getting work in.
+     *
+     * `start` does not read the upload — there is no storage behind `dev:mock` and nothing to read —
+     * but it does keep the two checks that decide whether the job may exist at all: the space is
+     * real, and the archive is a file this mock knows about. The pages appear when the job lands,
+     * so the sidebar changes underneath the report rather than the report claiming pages nobody has.
+     */
+    imports: {
+      start: async (input: { spaceId: string; source: ImportSource; fileId: string }) => {
+        if (!spaces.some((s) => s.id === input.spaceId)) throw notFound('Space')
+        const row: ImportJob = {
+          id: nextId(),
+          workspaceId: '' as ImportJob['workspaceId'],
+          requestedBy: ME as ImportJob['requestedBy'],
+          source: input.source,
+          targetId: input.spaceId,
+          sourceFileId: input.fileId,
+          state: 'queued',
+          error: null,
+          counts: { total: 0, done: 0, skipped: 0, failed: 0 },
+          report: [],
+          createdAt: new Date().toISOString(),
+          finishedAt: null,
+        }
+        importJobs.unshift(row)
+        return { ...row }
+      },
+
+      get: async ({ jobId }: { jobId: string }) => {
+        const row = importJobs.find((j) => j.id === jobId)
+        if (!row) throw notFound('Import')
+        advanceImport(row)
+        return { ...row }
+      },
+
+      /** Without the reports, as the server answers it — a list of thousands-of-rows reports is not a list. */
+      list: async ({ limit = 20 }: { limit?: number } = {}) => {
+        for (const row of importJobs) advanceImport(row)
+        return importJobs.slice(0, limit).map(({ report: _report, ...summary }) => summary)
       },
     },
 

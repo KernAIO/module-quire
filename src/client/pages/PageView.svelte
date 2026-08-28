@@ -22,6 +22,7 @@ import { untrack } from 'svelte'
 import { getQuireApi } from '../api-instance.js'
 import CommentsPanel from '../components/CommentsPanel.svelte'
 import ConfirmDialog from '../components/ConfirmDialog.svelte'
+import ExportDialog from '../components/ExportDialog.svelte'
 import FavoriteStar from '../components/FavoriteStar.svelte'
 import PageEditor from '../components/PageEditor.svelte'
 import PageLabels from '../components/PageLabels.svelte'
@@ -265,6 +266,15 @@ async function revert() {
  */
 let shareOpen = $state(false)
 const canPublish = $derived(canQuire('pagePublish'))
+
+/**
+ * Taking this page out as a file.
+ *
+ * Nothing is loaded for it here: the dialog is the only thing that knows what an export needs, and
+ * it asks for the space, the tree and any job already running the moment it opens. This screen's
+ * whole part in the feature is a flag and a menu entry, which is what an entry point should be.
+ */
+let exportOpen = $state(false)
 
 const publicationsQuery = createQuery(() => ({
   queryKey: quireKeys.publications(workspaceId, doc?.spaceId ?? ''),
@@ -592,6 +602,25 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
                 },
               ]
             : []),
+          /*
+           * Every kind of page, not only a `page`. A live doc and a database both render through
+           * `renderPageDoc` like anything else — a database exports as the table it is — so the
+           * restriction that belongs on **Share to the web** does not belong here.
+           *
+           * `page.export` rather than `page.view`, matching what `exports.start` asks: reading a
+           * handbook a page at a time and walking out with the whole thing in a zip are different
+           * acts, and an administrator is allowed to think so.
+           */
+          ...(canQuire('pageExport')
+            ? [
+                {
+                  id: 'export',
+                  label: t('export_menu'),
+                  icon: 'download',
+                  onSelect: () => (exportOpen = true),
+                },
+              ]
+            : []),
           {
             id: 'watch',
             label: watching ? t('watch_stop') : t('watch'),
@@ -756,6 +785,13 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
   />
 
   <PublishDialog bind:open={shareOpen} {workspaceId} spaceId={doc.spaceId} page={doc} />
+
+  <ExportDialog
+    bind:open={exportOpen}
+    {workspaceId}
+    spaceId={doc.spaceId}
+    page={{ id: doc.id, title: doc.title }}
+  />
 
   <!--
     The body says nothing about numbers until it knows them. Naming a count before the tree has

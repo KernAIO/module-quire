@@ -65,4 +65,27 @@ export const quireKeys = {
   /** a relation cell's search; `row` so any row edit re-resolves the names it draws */
   lookup: (workspaceId: string, databaseId: string, query: string) =>
     ['quire', 'row', workspaceId, databaseId, 'lookup', query] as const,
+
+  /**
+   * Work on its way out and on its way in.
+   *
+   * `export` and `import` are **realtime** entity names, not cache names — the server announces a
+   * `change` on every progress write (`services/export.ts` patches the counters, then announces),
+   * so a screen holding one of these keys redraws as the job moves without polling for it. That is
+   * why the singular spelling has to match the server's exactly: `exports` here would be a key
+   * nothing ever invalidates, and a progress bar that never moves.
+   *
+   * Polling is still set up beside it in the screens, because realtime is best-effort — a dropped
+   * socket, or `dev:mock`, has no announcements at all — and "did my export finish" is a question
+   * that must be answerable without one.
+   *
+   * The list keys are per person rather than per workspace even though the workspace id is what is
+   * in them: `exports.list` and `imports.list` filter on `requested_by` on the server, so what comes
+   * back is already only this person's. A workspace-wide announcement invalidating one person's list
+   * costs a refetch and tells them nothing about anybody else, which is the right trade.
+   */
+  exports: (workspaceId: string) => ['quire', 'export', workspaceId] as const,
+  exportJob: (workspaceId: string, jobId: string) => ['quire', 'export', workspaceId, jobId] as const,
+  imports: (workspaceId: string) => ['quire', 'import', workspaceId] as const,
+  importJob: (workspaceId: string, jobId: string) => ['quire', 'import', workspaceId, jobId] as const,
 }

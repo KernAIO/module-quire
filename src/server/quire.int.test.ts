@@ -227,7 +227,9 @@ describe('migrations', () => {
     expect(tables.map((r) => r.relname)).toEqual([
       'comments',
       'databases',
+      'export_jobs',
       'favorites',
+      'import_jobs',
       'labels',
       'page_labels',
       'page_versions',

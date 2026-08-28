@@ -71,6 +71,13 @@
       "when": 1787954227617,
       "tag": "0009_public_asset_references",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788040627617,
+      "tag": "0010_transfers",
+      "breakpoints": true
     }
   ]
 }

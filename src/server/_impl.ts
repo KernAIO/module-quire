@@ -192,6 +192,27 @@ export function implement_(kernel: Kernel) {
     scope?: Record<string, string>,
   ) => kernel.realtime.change(workspaceId, { module: MODULE_ID, entity, id, op, scope })
 
+  /**
+   * The same, for the one entity a workspace-wide broadcast should not carry.
+   *
+   * A transfer is fenced to the person who asked for it everywhere else — `list` returns only their
+   * rows, `get` answers NOT_FOUND rather than FORBIDDEN for anyone else's id — and announcing it on
+   * the workspace channel handed every member the id and the moment it was created, which is the
+   * fact the NOT_FOUND exists to withhold. `services/export.ts` carries the long version.
+   */
+  const announceToRequester = (
+    workspaceId: string,
+    userId: string,
+    entity: 'export' | 'import',
+    id: string,
+    op: 'created' | 'updated' | 'deleted',
+  ) =>
+    kernel.realtime.toUser(userId, {
+      t: 'change',
+      workspaceId: workspaceId as Publication['workspaceId'],
+      change: { module: MODULE_ID, entity, id, op },
+    })
+
   return os.router({
     spaces: {
       list: scoped.spaces.list
@@ -1055,6 +1076,147 @@ export function implement_(kernel: Kernel) {
           await requirePage(tx, context, input.workspaceId, input.pageId, 'quire.page.view')
           await svc.organisation.recordRecent(tx, input.workspaceId, asPerson(context), input.pageId)
           return { ok: true as const }
+        }),
+      ),
+    },
+
+    /**
+     * Taking work out.
+     *
+     * The handler is deliberately thin, because nothing about an export can be decided here: which
+     * pages go in is a per-page permission question asked as the requester against a tree that may
+     * be five hundred deep, and rendering one is a round trip to storage and possibly to Chromium.
+     * All three of those outlive an HTTP request, so this records a row, hands it to a worker, and
+     * answers with something to watch.
+     *
+     * The one thing it *does* decide is whether this person may ask at all, and that is asked twice
+     * over: `requires` puts the workspace-level gate on the procedure, and the handler resolves the
+     * target — a page's own ancestor chain, or the space — and asks again at the narrow scope. The
+     * second check is the one a page-scoped DENY can reach.
+     */
+    exports: {
+      start: scoped.exports.start.use(requires('quire.page.export')).handler(async ({ input, context }) => {
+        const row = await run(context, input.workspaceId, async (tx) => {
+          if (input.scope === 'space') {
+            await svc.access.spaceRow(tx, input.workspaceId, input.targetId)
+            await svc.access.requireSpace(
+              context.principal,
+              'quire.page.export',
+              input.workspaceId,
+              input.targetId,
+            )
+          } else {
+            await requirePage(tx, context, input.workspaceId, input.targetId, 'quire.page.export')
+          }
+          // Expired artefacts go now, and jobs that lost their worker are failed now, in the
+          // workspace whose transaction is already open — see the notes on `sweep` and `reap` for
+          // why neither is a cron job. Neither may take a request down, hence the catch.
+          await svc.exports.sweep(tx, input.workspaceId).catch(() => 0)
+          await svc.exports.reap(tx, input.workspaceId).catch(() => 0)
+          return svc.exports.start(tx, context.principal, input.workspaceId, input)
+        })
+
+        /*
+         * Sent after the row is committed, so the worker cannot reach for a row that is not there
+         * yet. If the queue refuses the job the row would otherwise sit `queued` for ever, looking
+         * like work in progress — so it is failed here, with the reason, rather than left hanging.
+         */
+        try {
+          await kernel.jobs.send('quire.export', { workspaceId: input.workspaceId, jobId: row.id })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          kernel.log.error({ err: message, jobId: row.id }, 'quire: an export could not be queued')
+          await run(context, input.workspaceId, (tx) =>
+            svc.exports.fail(tx, input.workspaceId, row.id, message),
+          )
+          throw new KernError('UNAVAILABLE', 'The export could not be queued. Try again in a moment.')
+        }
+        await announceToRequester(input.workspaceId, row.requestedBy, 'export', row.id, 'created')
+        return { ...svc.exports.toExportJob(row), downloadUrl: null }
+      }),
+
+      get: scoped.exports.get.use(requires('quire.page.export')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const row = await svc.exports.get(tx, input.workspaceId, input.jobId, context.principal)
+          return {
+            ...svc.exports.toExportJob(row),
+            downloadUrl: await svc.exports.downloadUrl(tx, input.workspaceId, row),
+          }
+        }),
+      ),
+
+      list: scoped.exports.list.use(requires('quire.page.export')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          await svc.exports.sweep(tx, input.workspaceId).catch(() => 0)
+          // This list is polled every two seconds while anything on it is running, so it is the
+          // thing that ends a job whose worker went away rather than drawing its spinner for ever.
+          await svc.exports.reap(tx, input.workspaceId).catch(() => 0)
+          const rows = await svc.exports.list(tx, input.workspaceId, context.principal, input.limit)
+          return rows.map(svc.exports.toExportJob)
+        }),
+      ),
+    },
+
+    imports: {
+      /**
+       * Queue one.
+       *
+       * The permission is checked here **and** again inside the job, and the two are not the same
+       * check. This one refuses a request before a row exists; the one in the job refuses to write
+       * after the queue has held the work for a minute, which is where a permission taken away in
+       * the meantime would otherwise be missed. `services/import.ts` does both, so the order they
+       * happen in cannot drift between the router and the worker.
+       */
+      start: scoped.imports.start.use(requires('quire.page.import')).handler(async ({ input, context }) => {
+        const row = await run(context, input.workspaceId, async (tx) => {
+          // Jobs that lost their worker are failed now, in the workspace whose transaction is
+          // already open — see `reap` for why this is not a cron job, and why it marks rather than
+          // deletes. It must not take the request down, hence the catch.
+          await svc.imports.reap(tx, input.workspaceId).catch(() => 0)
+          return svc.imports.start(tx, context.principal, input.workspaceId, input)
+        })
+
+        /*
+         * Sent after the row is committed, so the worker cannot reach for a row that is not there
+         * yet. If the queue refuses the job the row would otherwise sit `queued` for ever, looking
+         * like an import in progress to somebody waiting to see whether their pages arrived — so it
+         * is failed here, with the reason, rather than left hanging.
+         */
+        try {
+          await kernel.jobs.send('quire.import', { workspaceId: input.workspaceId, jobId: row.id })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          kernel.log.error({ err: message, jobId: row.id }, 'quire: an import could not be queued')
+          await run(context, input.workspaceId, (tx) =>
+            svc.imports.fail(tx, input.workspaceId, row.id, message),
+          )
+          throw new KernError('UNAVAILABLE', 'The import could not be queued. Try again in a moment.')
+        }
+        await announceToRequester(input.workspaceId, row.requestedBy, 'import', row.id, 'created')
+        return svc.imports.toImportJob(row)
+      }),
+
+      get: scoped.imports.get
+        .use(requires('quire.page.import'))
+        .handler(({ input, context }) =>
+          run(context, input.workspaceId, async (tx) =>
+            svc.imports.toImportJob(
+              await svc.imports.get(tx, input.workspaceId, input.jobId, context.principal),
+            ),
+          ),
+        ),
+
+      /** Without the reports — a list of thousands-of-rows reports is megabytes to draw a table. */
+      list: scoped.imports.list.use(requires('quire.page.import')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          // Polled every two seconds while anything on it is running, so it is the thing that ends
+          // a job whose worker went away rather than drawing its spinner for ever.
+          await svc.imports.reap(tx, input.workspaceId).catch(() => 0)
+          const rows = await svc.imports.list(tx, input.workspaceId, context.principal, input.limit)
+          return rows.map((row) => {
+            const { report, ...summary } = svc.imports.toImportJob(row)
+            return summary
+          })
         }),
       ),
     },

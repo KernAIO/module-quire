@@ -50,6 +50,27 @@ export const quireClientModule = defineClientModule({
       permission: QUIRE_PERMISSIONS.spaceView,
     },
     /**
+     * Work on its way out and on its way in.
+     *
+     * Two literal segments, so it beats `/quire/:space` however the two are ordered — the shell
+     * scores a match as `literals * 1000 + segments`. Its place in this list is for a reader.
+     *
+     * **No `permission`, on purpose**, and this is the one route here without one. The screen has
+     * two halves behind two independent keys — `quire.page.export` is a member by default,
+     * `quire.page.import` is owner-and-admin — so a single gate would either hide it from somebody
+     * who may import or show it to somebody who may do neither; each half asks its own key instead.
+     * And a gate here would misbehave rather than 404: a route the shell refuses falls through to
+     * `/quire/:space`, which would tell the person "Space not found" about a space called
+     * *transfers*.
+     */
+    {
+      path: '/quire/transfers',
+      component: () => import('./pages/TransfersPage.svelte'),
+      get title() {
+        return t('transfers')
+      },
+    },
+    /**
      * Declared before `/quire/:space/:page` for a reader's benefit only — the shell resolves by
      * specificity, not by order, so the two literal segments here beat the one in the page route
      * whatever sequence they are written in. A page whose id happened to be "trash" could not
@@ -92,6 +113,21 @@ export const quireClientModule = defineClientModule({
       icon: 'plus',
       permission: QUIRE_PERMISSIONS.spaceManage,
       run: (ctx) => ctx.navigate('/quire?new=1'),
+    },
+    /*
+     * The palette is the second way to a running job, and the one that works from anywhere.
+     * Gated on `page.export` rather than left open: the command list is a menu, and an entry that
+     * leads to a screen with both halves empty is an entry that teaches people to ignore the list.
+     * Somebody who may import and not export reaches the screen from the import dialog instead.
+     */
+    {
+      id: 'quire.transfers',
+      get label() {
+        return t('cmd_transfers')
+      },
+      icon: 'package',
+      permission: QUIRE_PERMISSIONS.pageExport,
+      run: (ctx) => ctx.navigate('/quire/transfers'),
     },
   ],
 

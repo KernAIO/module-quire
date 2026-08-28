@@ -321,4 +321,156 @@ export const Publication = z.object({
 })
 export type Publication = z.infer<typeof Publication>
 
+// =====================================================================================
+// Getting work in and out
+// =====================================================================================
+
+/**
+ * How much of the tree an export takes.
+ *
+ * `page` is one page; `subtree` is a page and everything under it; `space` is every page in a space.
+ * The three are not a convenience — they are the three questions people actually ask ("send me this",
+ * "send me this section", "get us off this product"), and the middle one is the one a flat
+ * page-by-page export cannot answer without somebody clicking three hundred times.
+ */
+export const ExportScope = z.enum(['page', 'subtree', 'space'])
+export type ExportScope = z.infer<typeof ExportScope>
+
+/**
+ * What comes out.
+ *
+ * `html` and `pdf` are rendered by the same static renderer the public site uses — never the live
+ * document and never the draft, so an export of a `page` is what a reader is served rather than what
+ * the last person to open it happened to be typing.
+ */
+export const ExportFormat = z.enum(['markdown', 'html', 'docx', 'pdf'])
+export type ExportFormat = z.infer<typeof ExportFormat>
+
+/** Where a transfer is. `done` and `failed` are terminal; nothing moves out of either. */
+export const TransferState = z.enum(['queued', 'running', 'done', 'failed'])
+export type TransferState = z.infer<typeof TransferState>
+
+/**
+ * A job's own progress, shared by both directions.
+ *
+ * `skipped` is the counter that matters and the one a progress bar leaves out. An export skips a page
+ * the requester may not read; an import skips a file it cannot map. Reporting the count is the
+ * difference between an artefact that is quietly missing things and one that says how many.
+ *
+ * Every field defaults, so a job that has not started yet parses as four zeroes rather than as
+ * absent — a client should never have to distinguish "no progress" from "no counters".
+ */
+export const TransferCounts = z.object({
+  total: z.number().int().nonnegative().default(0),
+  done: z.number().int().nonnegative().default(0),
+  skipped: z.number().int().nonnegative().default(0),
+  failed: z.number().int().nonnegative().default(0),
+})
+export type TransferCounts = z.infer<typeof TransferCounts>
+
+/**
+ * A request to take a page, a subtree or a space out of Quire as a file.
+ *
+ * There is no artefact URL here and there should not be. `fileId` is an opaque id, not an address:
+ * the download is a signed URL a procedure mints per request, so that the fence on who may fetch a
+ * subtree export — which flattens pages of different readerships into one file — is applied at the
+ * moment of the fetch rather than baked into a link that outlives it. A client that builds a storage
+ * key from an id is the mistake `migrations/0009` had to go back and scrub out of published HTML.
+ */
+export const ExportJob = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  requestedBy: UserId,
+  scope: ExportScope,
+  /** the page for `page` and `subtree`, the space for `space`; `scope` says which */
+  targetId: Id,
+  format: ExportFormat,
+  state: TransferState,
+  /** null until the job succeeds — an artefact that is still being written is not offered */
+  fileId: Id.nullable(),
+  /**
+   * Why it failed, in the words of whatever failed — a Gotenberg refusal, the name of a page that
+   * would not render. Diagnostic, not a user-facing string: a screen says its piece from a message
+   * key chosen by `state`, and shows this beside it for the person who has to act on it.
+   */
+  error: z.string().nullable(),
+  counts: TransferCounts,
+  createdAt: Timestamp,
+  /** null while `queued` or `running` */
+  finishedAt: Timestamp.nullable(),
+})
+export type ExportJob = z.infer<typeof ExportJob>
+
+/** What kind of export is being read in. */
+export const ImportSource = z.enum(['notion', 'confluence', 'markdown'])
+export type ImportSource = z.infer<typeof ImportSource>
+
+/**
+ * What happened to one file.
+ *
+ * Three outcomes and not two, because "not imported" covers two different situations a person needs
+ * to tell apart: a file Quire deliberately did not want (an asset already inlined, a Notion index
+ * page that duplicates the folder) is `skipped`, and a file that should have become a page and did
+ * not is `failed`. Collapsing them turns a broken import into a tidy-looking one.
+ */
+export const ImportOutcome = z.enum(['imported', 'skipped', 'failed'])
+export type ImportOutcome = z.infer<typeof ImportOutcome>
+
+/**
+ * One row of the report: what the file was, what became of it, and which.
+ *
+ * The failure list is the feature. A real Notion export has files that will not map, and an import
+ * that silently drops forty pages is worse than one that refuses — so every file in the upload gets
+ * an entry, including the ones that worked, and the report is complete rather than a list of
+ * complaints. `path` is the path inside the archive, which is what somebody has to go and look at.
+ */
+export const ImportReportEntry = z.object({
+  /** the file's path inside the uploaded archive, exactly as it appeared */
+  path: z.string(),
+  outcome: ImportOutcome,
+  /** the page it became, for `imported`; null for the other two */
+  pageId: Id.nullable().default(null),
+  /**
+   * Why, for `skipped` and `failed`; null for `imported`.
+   *
+   * Free text on purpose: the reasons are as varied as the exports people have, and a closed enum
+   * here would either be wrong within a week or force every unexpected file into an `other` that
+   * tells nobody anything.
+   */
+  reason: z.string().nullable().default(null),
+})
+export type ImportReportEntry = z.infer<typeof ImportReportEntry>
+
+/**
+ * A Notion export zip, a Confluence export or a folder of Markdown, on its way into one space.
+ *
+ * `sourceFileId` is the upload, not an artefact — the opposite direction from `ExportJob.fileId`, and
+ * named differently for that reason. An import produces pages, not a file.
+ *
+ * Internal links between imported pages are rewritten to Quire page ids as the import goes; a link
+ * that cannot be resolved becomes plain text rather than a dead link, and the page that carried it
+ * still counts as `imported`. That choice is why `report` is per *file* and not per *link*: a page
+ * that arrived with one unresolvable link is an imported page, not a failure.
+ */
+export const ImportJob = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  requestedBy: UserId,
+  source: ImportSource,
+  /** the space being written into. An import always targets one space; there is no scope here. */
+  targetId: Id,
+  /** the uploaded archive — consumed by the job, and present before the job exists */
+  sourceFileId: Id,
+  state: TransferState,
+  /** why the *job* failed; why one *file* failed is that file's entry in `report` */
+  error: z.string().nullable(),
+  counts: TransferCounts,
+  /** one entry per file in the upload, in the order they were read */
+  report: z.array(ImportReportEntry),
+  createdAt: Timestamp,
+  /** null while `queued` or `running` */
+  finishedAt: Timestamp.nullable(),
+})
+export type ImportJob = z.infer<typeof ImportJob>
+
 export const Ok = z.object({ ok: z.literal(true) })

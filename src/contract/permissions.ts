@@ -64,6 +64,56 @@ export const quirePermissions = definePermissions([
     defaultRoles: ['owner', 'admin', 'member'],
     dangerous: false,
   },
+  /**
+   * Taking pages out of Kern as a file.
+   *
+   * A separate key from `quire.page.view` rather than a consequence of it, and the distinction is
+   * one administrators actually make: reading a handbook a page at a time and walking out with the
+   * whole thing in a zip are different acts, and the second is the one a leaver does on their last
+   * afternoon. Every page in an export is still checked against `quire.page.view` as it is written,
+   * so this grants nothing extra — it decides whether the bulk shape is available at all.
+   *
+   * Not `dangerous`, because it destroys nothing and every page in the result is one the exporter
+   * could already open. The import side is the dangerous half: that one writes.
+   *
+   * A guest is deliberately not in the default set. A guest is somebody invited to read one thing,
+   * and the difference between reading it and keeping a copy of the section around it is exactly
+   * what a guest is a guest for.
+   */
+  {
+    key: 'quire.page.export',
+    label: 'Export pages',
+    description: 'Take a page, a section or a space out as Markdown, HTML or PDF',
+    scope: 'space',
+    defaultRoles: ['owner', 'admin', 'member'],
+    dangerous: false,
+  },
+  /**
+   * Bringing pages in from somewhere else, in bulk.
+   *
+   * **`dangerous`, where the export half is not**, and the asymmetry is the whole reason this is a
+   * separate key rather than `quire.page.create` applied a thousand times. An export reads pages the
+   * exporter could already open; an import *writes* — hundreds of pages, a page tree, databases with
+   * their columns — into a space, in one act, from a file nobody in the workspace has read. Undoing
+   * it means finding every page it made and trashing them, which is not a button. The tracker marks
+   * `tracker.import.run` the same way and for the same reason.
+   *
+   * Owner and admin only, and that is a deliberate step up from `quire.page.create`. Somebody who may
+   * write in a space is not thereby somebody who may reshape it: an ordinary member creating pages
+   * makes them one at a time, with the tree in front of them.
+   *
+   * It is not a substitute for the narrower keys. An import still writes only where the requester
+   * holds this permission *on that space*, and the job re-asks when it runs rather than trusting the
+   * answer from when it was queued — a permission taken away between the two is a job that fails.
+   */
+  {
+    key: 'quire.page.import',
+    label: 'Import pages',
+    description: 'Bring a Notion, Confluence or Markdown export into a space as pages',
+    scope: 'space',
+    defaultRoles: ['owner', 'admin'],
+    dangerous: true,
+  },
   {
     key: 'quire.page.delete',
     label: 'Delete pages permanently',
@@ -204,6 +254,40 @@ export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
   'databases.updateView': { check: 'page', permission: 'quire.page.edit' },
   'databases.removeView': { check: 'page', permission: 'quire.page.edit' },
   'databases.setRelation': { check: 'page', permission: 'quire.page.edit' },
+
+  /*
+   * `start` is declared `page` because that is the branch that can be bound narrowly and therefore
+   * the branch worth proving: a `page` or `subtree` export resolves the target page's own ancestor
+   * chain and asks about it, so a page-scoped DENY of `quire.page.export` refuses the export of that
+   * page and of any section containing it. A `space` export has no one page to resolve — it is the
+   * whole space — so that branch asks the same permission at space scope, which is the narrowest
+   * scope that exists for it. `export.int.test.ts` covers the space branch against a space-scoped
+   * DENY, because the sweep in `authz.int.test.ts` only ever sends the page branch.
+   *
+   * `get` and `list` are `workspace` for the same reason `favorites.list` is: "my own exports" has
+   * no narrower scope. What keeps them private is not a permission at all but the `requested_by`
+   * filter in the query — row-level security fences the tenant, and a tenant is not a person.
+   */
+  'exports.start': { check: 'page', permission: 'quire.page.export' },
+  'exports.get': { check: 'workspace', permission: 'quire.page.export' },
+  'exports.list': { check: 'workspace', permission: 'quire.page.export' },
+
+  /*
+   * `start` is `space` where its export counterpart is `page`, and the difference is not an
+   * oversight. An import has no page to be scoped to — it *creates* the pages — so the space it
+   * writes into is the narrowest scope that exists for it, and a space-scoped DENY of
+   * `quire.page.import` is what has to refuse it. The check is asked twice on purpose: once here,
+   * before a row is recorded, and again inside the job as the person who asked, because a job runs
+   * minutes later and a permission can be taken away in between.
+   *
+   * `get` and `list` are `workspace` for the same reason `exports.get` and `favorites.list` are:
+   * "my own imports" has no narrower scope. What keeps them private is the `requested_by` filter in
+   * the query rather than a permission — row-level security fences the tenant, and a tenant is not
+   * a person.
+   */
+  'imports.start': { check: 'space', permission: 'quire.page.import' },
+  'imports.get': { check: 'workspace', permission: 'quire.page.import' },
+  'imports.list': { check: 'workspace', permission: 'quire.page.import' },
 
   'publishing.publish': { check: 'page', permission: 'quire.page.publish' },
   'publishing.revert': { check: 'page', permission: 'quire.page.edit' },

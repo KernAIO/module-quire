@@ -31,6 +31,7 @@ export const schema = pgSchema('mod_quire')
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' })
 
 const jsonObject = (name: string) => jsonb(name).notNull().default(sql`'{}'::jsonb`)
+const jsonArray = (name: string) => jsonb(name).notNull().default(sql`'[]'::jsonb`)
 const uuidArray = (name: string) => uuid(name).array().notNull().default(sql`'{}'::uuid[]`)
 
 const id = () => uuid('id').primaryKey().default(sql`uuidv7()`)
@@ -530,6 +531,159 @@ export const publications = schema.table(
   ],
 )
 
+/**
+ * A request to take a page, a page and everything under it, or a whole space out of Quire as a file.
+ *
+ * A row rather than a request that streams its answer, because the work is unbounded: a space is a
+ * tree of arbitrary size, and PDF means a round trip to Gotenberg per page. A job that outlives its
+ * HTTP request can report progress, can fail with a reason somebody reads afterwards, and can be
+ * retried without the browser having stayed open. `counts` and `error` are what make that true — see
+ * both below.
+ *
+ * What the artefact is rendered from is decided elsewhere and is worth stating here anyway, because
+ * this table is where somebody looks when the output is wrong: HTML and PDF come from
+ * `renderPageDoc`, the same static renderer the public site uses. Never the Y.Doc, never the draft.
+ */
+export const exportJobs = schema.table(
+  'export_jobs',
+  {
+    id: id(),
+    workspaceId: ws(),
+    /**
+     * **Not null, deliberately, where every other `created_by` in this schema is nullable.**
+     *
+     * The artefact is the hazard. A subtree export flattens pages with different readerships into one
+     * file, so whoever may fetch it may read every page that went into it — handing it to the
+     * workspace at large launders the permission check that produced it. Fencing the download to the
+     * person who asked needs a person to fence it to, and a row whose requester has gone null cannot
+     * be fenced. So the column refuses to be empty and the artefact outlives nobody.
+     */
+    requestedBy: uuid('requested_by').notNull(),
+    /** `page` — one page. `subtree` — a page and its descendants. `space` — every page in a space. */
+    scope: text('scope').notNull(),
+    /** the page for `page` and `subtree`, the space for `space` — which one is decided by `scope` */
+    targetId: uuid('target_id').notNull(),
+    /** `markdown` | `html` | `docx` | `pdf` */
+    format: text('format').notNull(),
+    /** `queued` | `running` | `done` | `failed` */
+    state: text('state').notNull().default('queued'),
+    /**
+     * The artefact in storage, written when the job finishes and null until then.
+     *
+     * Null while running is the honest state and the one that keeps a half file from being offered:
+     * the uploader writes the file, then the job records the id, so there is no window in which this
+     * points at bytes that are still arriving. An id is not a URL — the download is a signed URL a
+     * procedure mints, never a storage key a client assembles. `migrations/0009` is what that rule
+     * cost the last time it was broken.
+     */
+    fileId: uuid('file_id'),
+    /**
+     * Why it failed, in the language of the thing that failed — "gotenberg unreachable", a Postgres
+     * SQLSTATE, the name of a page that could not be rendered.
+     *
+     * Diagnostic text, not a user-facing string: whatever a screen shows a person comes from a
+     * message key chosen from `state` and the machine-readable part of this. Storing the raw reason
+     * is what makes a support question answerable a week later.
+     */
+    error: text('error'),
+    /**
+     * The job's own progress, as `{ total, done, skipped, failed }`.
+     *
+     * `skipped` is not padding: a subtree export by somebody who may not read one of its children
+     * leaves that child out, and a count of what was left out is the difference between an export
+     * that is missing pages and an export that says so.
+     *
+     * JSONB rather than four integer columns because the set differs by format and will grow — a PDF
+     * export wants `bytes`, a Markdown one does not — and adding a counter should not be a migration
+     * against a table whose rows are all transient anyway.
+     */
+    counts: jsonObject('counts'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    /** null while `queued` or `running`; set once, on the transition to `done` or `failed` */
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    index('export_jobs_ws_created_idx').on(t.workspaceId, t.createdAt.desc()),
+    index('export_jobs_ws_state_idx').on(t.workspaceId, t.state, t.createdAt),
+  ],
+)
+
+/**
+ * A Notion export zip, a Confluence export or a folder of Markdown, on its way into a space.
+ *
+ * The same shape as `export_jobs` pointed the other way, with one addition that carries the weight of
+ * the feature: `report`. A real Notion export contains files that will not map — a `.csv` whose
+ * database has no columns Quire can type, an asset with no page referring to it, a `.md` whose page
+ * id appears twice. An import that silently drops forty pages is worse than one that refuses, so
+ * every file gets an entry saying which of the three things happened to it.
+ */
+export const importJobs = schema.table(
+  'import_jobs',
+  {
+    id: id(),
+    workspaceId: ws(),
+    /** not null for the same reason as `export_jobs.requested_by` — see the comment there */
+    requestedBy: uuid('requested_by').notNull(),
+    /** `notion` | `confluence` | `markdown` */
+    source: text('source').notNull(),
+    /** the space being written into. An import always targets one space; there is no `scope` here. */
+    targetId: uuid('target_id').notNull(),
+    /**
+     * The uploaded archive.
+     *
+     * **Called `source_file_id` and not `file_id`, on purpose.** `export_jobs.file_id` is the file the
+     * job *produces* and is null until it succeeds; this is the file the job *consumes* and exists
+     * before the job does. One name pointing in two directions across two tables read by one screen
+     * is how a worker ends up writing its output id over the pointer to its input — which loses the
+     * archive, so the job cannot be retried and nothing reports that anything went missing. Two names
+     * make that mistake a compile error instead.
+     */
+    sourceFileId: uuid('source_file_id').notNull(),
+    /** `queued` | `running` | `done` | `failed` */
+    state: text('state').notNull().default('queued'),
+    /** why the *job* failed; why one *file* failed is that file's entry in `report` */
+    error: text('error'),
+    /** `{ total, done, skipped, failed }` — the same counters as an export, over files rather than pages */
+    counts: jsonObject('counts'),
+    /**
+     * One entry per file in the upload: `{ path, outcome, pageId, reason }`.
+     *
+     * **Why this is a column and not a table.** The report is written by one job and read whole, as
+     * one document, by one screen — the person who ran the import, looking at what happened to their
+     * import. Nothing joins to an entry, nothing updates an entry after the fact, nothing holds a
+     * foreign key into one, and no entry outlives its job. A row-per-file table would mean four
+     * thousand inserts to render a list that is only ever fetched by `where job_id = $1`, plus a
+     * second tenant table with its own `workspace_id`, its own policy, its own `TENANT_TABLES` entry
+     * and its own retention rule — all to store a document. Dropping the job drops its report here;
+     * there is nothing to sweep.
+     *
+     * The size is the part worth checking rather than assuming: an entry is a path, one of three
+     * words, and either a uuid or a sentence, so a five-thousand-file import is a few hundred
+     * kilobytes — one TOASTed value read once. That holds for the exports people actually have.
+     *
+     * **What would change if somebody wanted to query across imports** — "every file that failed for
+     * this reason, across every import this month" — is that this stops being the right shape, and
+     * not by a little. `jsonb_array_elements` over the whole table can answer it, but no index helps:
+     * a GIN index on this column serves containment (`@>`), not a predicate and an ordering inside
+     * the array. The change is a `mod_quire.import_entries` table — `job_id`, `workspace_id`, `path`,
+     * `outcome`, `page_id`, `reason` — indexed on `(workspace_id, outcome, created_at)`, written by
+     * the same worker, with the existing rows backfilled by expanding this column through
+     * `jsonb_to_recordset`. It is a tenant table, so it arrives with the full triple (workspace_id,
+     * FORCE RLS, one policy) and an entry in `TENANT_TABLES`, and it needs the retention rule this
+     * column gets for free. The threshold is exactly that question: while every read names one job,
+     * the column is right.
+     */
+    report: jsonArray('report'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    /** null while `queued` or `running`; set once, on the transition to `done` or `failed` */
+    finishedAt: ts('finished_at'),
+  },
+  (t) => [
+    index('import_jobs_ws_created_idx').on(t.workspaceId, t.createdAt.desc()),
+    index('import_jobs_ws_state_idx').on(t.workspaceId, t.state, t.createdAt),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
 export const TENANT_TABLES = [
   'spaces',
@@ -546,4 +700,6 @@ export const TENANT_TABLES = [
   'recent_views',
   'watchers',
   'publications',
+  'export_jobs',
+  'import_jobs',
 ] as const

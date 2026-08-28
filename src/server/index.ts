@@ -15,7 +15,7 @@ import { defineModule, defineServerModule, implement_, packageVersion } from './
 import { pageDocFromBase64 } from './document.js'
 import { textFromPageDoc } from './render.js'
 import { pages, schema, spaces } from './schema.js'
-import { quireServices } from './services/index.js'
+import { quireJobs, quireServices } from './services/index.js'
 import { createNotify } from './services/notify.js'
 
 /**
@@ -107,6 +107,8 @@ export const quireModule = defineServerModule({
   schema,
   migrationsFolder: join(dirname(fileURLToPath(import.meta.url)), '../../migrations'),
   router: implement_,
+  /** Gathered in `services/index.ts`, so adding one is not an edit to this file. */
+  jobs: quireJobs,
 
   /**
    * `quire:page:<id>` documents for the workspace-wide search index.

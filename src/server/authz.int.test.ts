@@ -129,6 +129,19 @@ function registerStubs(k: Kernel) {
       handler: async (input: { userId: string }) => bindings.get(input.userId) ?? [],
     },
     'settings.getModule': { handler: async () => ({}) },
+    // `imports.start` refuses a file that is not this workspace's before it records anything, so the
+    // fixture below needs core to answer for one. Nothing here ever reads the archive's bytes.
+    'files.get': {
+      handler: async (input: { id: string }) => ({
+        id: input.id,
+        workspaceId: WS,
+        name: 'export.zip',
+        mimeType: 'application/zip',
+        size: 1024,
+        key: `ws/${WS}/quire/uploads/${input.id}/export.zip`,
+        status: 'ready',
+      }),
+    },
   })
 }
 
@@ -150,6 +163,9 @@ const fixture = {
   // One each, for the same reason there are three comments: a procedure that wrongly succeeds must
   // not be able to make the next one fail with NOT_FOUND, which is not the refusal being asserted.
   labelToRemove: '',
+  exportJobId: '',
+  importJobId: '',
+  importFileId: randomUUID(),
   publicationId: '',
   publicationToRemove: '',
   publicationSlug: 'handbook-site',
@@ -275,6 +291,36 @@ beforeAll(async () => {
   fixture.labelToRemove = (await label('Archive')).id
 
   /*
+   * An export the sweep can name. Recorded through the service rather than the router, because the
+   * router would also hand the job to pg-boss — and what this file asks of `exports.get` is only
+   * that a denied caller is refused, which happens long before anything is rendered.
+   */
+  fixture.exportJobId = (
+    await run((tx) =>
+      svc.exports.start(tx, principal(SWEEP), WS, {
+        scope: 'page',
+        targetId: page.id,
+        format: 'markdown',
+      }),
+    )
+  ).id
+
+  /*
+   * An import the sweep can name. Recorded through the service rather than the router, because the
+   * router would also hand the job to pg-boss — and what this file asks of `imports.get` is only
+   * that a denied caller is refused, which happens long before an archive is read.
+   */
+  fixture.importJobId = (
+    await run((tx) =>
+      svc.imports.start(tx, principal(SWEEP), WS, {
+        spaceId: space.id,
+        source: 'markdown',
+        fileId: fixture.importFileId,
+      }),
+    )
+  ).id
+
+  /*
    * A real, servable published site, so the `check: 'public'` pass below compares two real answers
    * rather than two identical 404s. Publishing renders the version, which is what makes the page
    * public at all — see `publications.ts`.
@@ -390,6 +436,25 @@ const inputFor = (): Record<string, Record<string, unknown>> => {
       propertyId: fixture.propertyId,
       toPageIds: [fixture.pageId],
     },
+
+    /*
+     * The `page` branch of `exports.start`, which is the one that can be bound narrowly. Its `space`
+     * branch asks the same permission at space scope and is covered in `export.int.test.ts` — the
+     * sweep sends one input per procedure, so a branch it does not send is a branch it cannot see.
+     */
+    'exports.start': { ...ws, scope: 'page', targetId: fixture.pageId, format: 'markdown' },
+    'exports.get': { ...ws, jobId: fixture.exportJobId },
+    'exports.list': ws,
+
+    /*
+     * `imports.start` is space-scoped rather than page-scoped, because an import has no page to be
+     * bound to — it creates them. The DENY the sweep writes for a `check: 'space'` procedure is at
+     * space scope, which is exactly the binding this branch has to refuse, so unlike `exports.start`
+     * there is no second branch left uncovered here.
+     */
+    'imports.start': { ...space, source: 'markdown', fileId: fixture.importFileId },
+    'imports.get': { ...ws, jobId: fixture.importJobId },
+    'imports.list': ws,
 
     'publishing.publish': { ...page, label: 'live' },
     'publishing.revert': page,

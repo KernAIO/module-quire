@@ -30,6 +30,17 @@ export const QUIRE_PERMISSIONS = {
   pageEdit: key('page.edit'),
   pagePublish: key('page.publish'),
   pageDelete: key('page.delete'),
+  /**
+   * The two halves of getting work in and out, and they are deliberately not one key.
+   *
+   * `page.export` is a member by default and `page.import` is owner-and-admin, so the pair is the
+   * one place in this module where the same screen has to be built for somebody who holds one and
+   * not the other. Every entry point checks its own: the page menu's **Export** on `pageExport`,
+   * the space menu's **Import** on `pageImport`, and the transfers screen draws whichever halves
+   * the person actually has rather than one gate over both.
+   */
+  pageExport: key('page.export'),
+  pageImport: key('page.import'),
 } as const
 
 export type QuirePermission = keyof typeof QUIRE_PERMISSIONS

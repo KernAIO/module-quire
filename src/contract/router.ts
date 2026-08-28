@@ -3,7 +3,12 @@ import { z } from 'zod'
 import {
   CommentAnchor,
   CommentThread,
+  ExportFormat,
+  ExportJob,
+  ExportScope,
   Favorite,
+  ImportJob,
+  ImportSource,
   Label,
   LabelColour,
   Ok,
@@ -183,6 +188,34 @@ export const PublicSearchHit = z.object({
 export type PublicSearchHit = z.infer<typeof PublicSearchHit>
 
 export const PublicSitemapEntry = z.object({ path: z.string(), lastModified: Timestamp })
+
+/**
+ * An export job, plus the one thing that cannot be stored on it: a link to the artefact.
+ *
+ * `downloadUrl` is minted per request and is null in every state but `done`. It is composed here
+ * rather than written into `export_jobs` because a signed storage URL is the object's key, so a
+ * stored one is both an address that leaks the workspace and file uuids and an address that stops
+ * working an hour later — and, worse, a fence applied once at the moment the job finished rather
+ * than every time somebody asks. A subtree export flattens pages of different readerships into one
+ * file, so the moment of the fetch is the moment that has to be checked.
+ */
+export const ExportJobDetail = ExportJob.extend({ downloadUrl: z.string().nullable() })
+export type ExportJobDetail = z.infer<typeof ExportJobDetail>
+
+/**
+ * An import job **without its report**, which is the only shape a list can afford to carry.
+ *
+ * The report is one row per file, and a Notion export is thousands of files — so twenty jobs in a
+ * list is a response of megabytes to draw a table of dates and states. `get` carries the whole thing
+ * because that screen is somebody looking at one import and asking what happened to their files,
+ * which is the question the report exists to answer.
+ *
+ * Omitted rather than truncated on purpose. A report cut off at fifty rows is one that has quietly
+ * stopped being the complete account of the archive, and a person reading "23 skipped" beside a list
+ * of twelve would have no way to know which. Absent is a state a client can render; incomplete is not.
+ */
+export const ImportJobSummary = ImportJob.omit({ report: true })
+export type ImportJobSummary = z.infer<typeof ImportJobSummary>
 
 /**
  * One picture from a published page, **as bytes rather than as an address**.
@@ -779,6 +812,120 @@ export const quireContract = {
       .route({ method: 'POST', path: '/pages/{pageId}/public-opt-out', ...t('publications') })
       .input(ws.extend({ pageId: Id, excluded: z.boolean().default(true) }))
       .output(z.object({ pageId: Id, excluded: z.boolean() })),
+  },
+
+  /**
+   * Taking work out: a page, a page and everything under it, or a whole space, as a file.
+   *
+   * Three procedures and no fourth, which is the shape worth explaining. There is no `download`:
+   * `get` carries a `downloadUrl` it mints as it answers, so the permission is checked on the
+   * request that fetches the file rather than baked into a link that outlives the check. And there
+   * is no `cancel`: a job either finishes or fails, both terminal, and a cancel that races a worker
+   * writing an artefact is a way to end up with an object nothing points at.
+   *
+   * **What the artefact contains is decided by the job, not by the caller.** `start` names a scope
+   * and a format; every page under that scope is then checked against the requester's own
+   * `quire.page.view`, and a page they may not read is left out and counted in `skipped`. So a
+   * subtree export by somebody with a page-scoped DENY is a smaller file, not a refusal — and
+   * `counts.skipped` is how they find out, which is the difference between an export that is quietly
+   * missing pages and one that says how many.
+   *
+   * `format: 'docx'` is declared in `ExportFormat` and refused by `start` today: see the note in
+   * `services/export.ts` for what makes a *correct* Word file more than a matter of effort, and why
+   * a refusal is better than a document that may not open.
+   */
+  exports: {
+    /** Queue one. The answer is a row to watch, never the file — see the note above. */
+    start: baseContract
+      .route({ method: 'POST', path: '/exports', ...t('exports') })
+      .input(
+        ws.extend({
+          scope: ExportScope,
+          /** the page for `page` and `subtree`, the space for `space`; `scope` says which */
+          targetId: Id,
+          format: ExportFormat,
+        }),
+      )
+      .output(ExportJobDetail),
+    /** Where it has got to, and — once it is `done` — a link that is good for a few minutes. */
+    get: baseContract
+      .route({ method: 'GET', path: '/exports/{jobId}', ...t('exports') })
+      .input(ws.extend({ jobId: Id }))
+      .output(ExportJobDetail),
+    /**
+     * This person's own exports, newest first.
+     *
+     * Deliberately not the workspace's. Row-level security fences the tenant, which is not a privacy
+     * boundary, so the `requested_by` filter in the query is the only thing that keeps one person's
+     * export of the salary handbook out of everybody else's list — the same rule `favorites.list`
+     * and `recents.list` follow.
+     */
+    list: baseContract
+      .route({ method: 'GET', path: '/exports', ...t('exports') })
+      .input(ws.extend({ limit: z.number().int().min(1).max(50).default(20) }))
+      .output(z.array(ExportJob)),
+  },
+
+  /**
+   * Getting work in: a Notion export, a Confluence export or a folder of Markdown, into one space.
+   *
+   * **The failure list is the feature.** A real export has files that will not map — an attachment,
+   * a `.csv` with no header, a page whose link points outside what was exported — and an import that
+   * silently drops forty pages is worse than one that refuses. So every file in the archive gets a
+   * row in `report` saying whether it became a page, was deliberately left out, or could not be read,
+   * and `counts.total` is exactly the number of rows: nothing in the archive goes unaccounted for.
+   *
+   * Three things follow from the archive being read whole before anything is written, and each is
+   * worth knowing before reading the handlers:
+   *
+   *   - **an import is all or nothing.** A zip that fails half way leaves the space exactly as it
+   *     was, because the plan is built in memory and written in one transaction;
+   *   - **links between imported pages are rewritten to Quire page ids**, which needs every id to
+   *     exist before any body is resolved — a link to a page further down the archive is the normal
+   *     case, not the exception. A link that resolves to nothing becomes plain text rather than a
+   *     dead link, and the report names the target it could not find;
+   *   - **a `.csv` becomes a database with typed columns**, guessed from the values and reported.
+   *
+   * `quire.page.import` is `dangerous`, as the tracker marks its own imports: this is the one thing
+   * in the module that writes hundreds of pages into a space in one act, and it is not undone by
+   * pressing something.
+   */
+  imports: {
+    /**
+     * Queue one. The answer is a row to watch; nothing has been written to the space yet.
+     *
+     * `fileId` is an upload — a core file the browser has already put in place — and not the archive
+     * itself. A zip is up to a few hundred megabytes, which is a file to be uploaded and then named,
+     * never a request body.
+     */
+    start: baseContract
+      .route({ method: 'POST', path: '/imports', ...t('imports') })
+      .input(
+        ws.extend({
+          /** the space being written into; an import always targets exactly one */
+          spaceId: Id,
+          source: ImportSource,
+          /** the uploaded archive, and not something this job produces — see `ImportJob` */
+          fileId: Id,
+        }),
+      )
+      .output(ImportJob),
+    /** Where it has got to, and — once it has finished — what happened to every file in it. */
+    get: baseContract
+      .route({ method: 'GET', path: '/imports/{jobId}', ...t('imports') })
+      .input(ws.extend({ jobId: Id }))
+      .output(ImportJob),
+    /**
+     * This person's own imports, newest first, without their reports — see `ImportJobSummary`.
+     *
+     * Deliberately not the workspace's, for the same reason `exports.list` is not: row-level security
+     * fences the tenant, which is not a privacy boundary, so the `requested_by` filter in the query
+     * is the only thing that keeps one person's import out of everybody else's list.
+     */
+    list: baseContract
+      .route({ method: 'GET', path: '/imports', ...t('imports') })
+      .input(ws.extend({ limit: z.number().int().min(1).max(50).default(20) }))
+      .output(z.array(ImportJobSummary)),
   },
 
   /**

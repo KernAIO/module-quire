@@ -27,8 +27,17 @@ export {
   type Comment,
   type CommentAnchor,
   type CommentThread,
+  type ExportFormat,
+  type ExportJob,
+  type ExportJobDetail,
+  type ExportScope,
   type Favorite,
   type FavoriteEntry,
+  type ImportJob,
+  type ImportJobSummary,
+  type ImportOutcome,
+  type ImportReportEntry,
+  type ImportSource,
   type Label,
   type LabelColour,
   MODULE_ID,
@@ -49,6 +58,8 @@ export {
   type RecentView,
   type Space,
   type SpaceVisibility,
+  type TransferCounts,
+  type TransferState,
   type VersionKind,
   type Watcher,
   type WatchState,
@@ -141,3 +152,24 @@ export {
   publicSiteBasePath,
   publicSiteUrl,
 } from './public-url.js'
+/**
+ * The vocabulary of a transfer, as labels rather than as enum members.
+ *
+ * Exported for the same reason `descriptorFor` and `viewIcon` are: a state, a scope, a format and a
+ * source have exactly one right name each in each language, and anything that ends up drawing one —
+ * a widget, a notification renderer, a screen written later — should read it from here rather than
+ * re-deriving a `switch` that has to be kept in step with the contract's enums.
+ */
+export {
+  EXPORT_FORMATS,
+  formatDescription,
+  formatLabel,
+  IMPORT_SOURCES,
+  isRunning,
+  progressRatio,
+  scopeLabel,
+  sourceDescription,
+  sourceLabel,
+  stateIcon,
+  stateLabel,
+} from './transfers.js'

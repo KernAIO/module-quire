@@ -21,6 +21,8 @@ import { t } from '../i18n.js'
 import { buildPageTree, type PageTreeNode } from '../index.js'
 import { canQuire } from '../permissions.js'
 import { quireKeys } from '../query.js'
+import ExportDialog from './ExportDialog.svelte'
+import ImportDialog from './ImportDialog.svelte'
 import LabelManager from './LabelManager.svelte'
 import PageTreeRow from './PageTreeRow.svelte'
 import SidebarFavorites from './SidebarFavorites.svelte'
@@ -217,6 +219,55 @@ function openTrash() {
   void navigation.go(`/${workspaceSlug}/quire/${encodeURIComponent(activeSpace.key)}/trash`)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The space menu: getting a whole space out, and getting somebody else's wiki in
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Both of these are about the *space* rather than about a page, and neither had a home before.
+ *
+ * The sidebar is where a space is chosen, so it is where a space's own actions belong — the page
+ * menu is one page's business, and the spaces index is a list of cards. The menu is built per
+ * permission and is not rendered at all when it would be empty: an ellipsis that opens onto nothing
+ * teaches people that the ellipsis is not worth pressing.
+ *
+ * Neither dialog is mounted until it has been asked for. They both make requests on open, and an
+ * always-mounted pair would run them on every Quire screen for everybody.
+ */
+let exportOpen = $state(false)
+let importOpen = $state(false)
+
+const canExport = $derived(canQuire('pageExport'))
+const canImport = $derived(canQuire('pageImport'))
+
+const spaceMenu = $derived.by((): MenuItem[] => {
+  const items: MenuItem[] = []
+  if (canExport)
+    items.push({
+      id: 'export-space',
+      label: t('export_space_menu'),
+      icon: 'download',
+      onSelect: () => (exportOpen = true),
+    })
+  if (canImport)
+    items.push({
+      id: 'import-space',
+      label: t('import_menu'),
+      icon: 'upload',
+      onSelect: () => (importOpen = true),
+    })
+  if (items.length > 0) {
+    items.push({ type: 'separator' })
+    items.push({
+      id: 'transfers',
+      label: t('transfers'),
+      icon: 'package',
+      onSelect: () => void navigation.go(`/${workspaceSlug}/quire/transfers`),
+    })
+  }
+  return items
+})
+
 let creating = $state(false)
 
 async function createPage(parentId: string | null) {
@@ -269,6 +320,23 @@ async function createPage(parentId: string | null) {
             variant="ghost"
             active={labelFilter !== null}
             label={t('label_filter')}
+          />
+        {/snippet}
+      </DropdownMenu>
+    {/if}
+    <!--
+      The space's own actions, beside the box that searches it. Only drawn when there is a space to
+      act on and at least one action the person may take.
+    -->
+    {#if activeSpace && spaceMenu.length > 0}
+      <DropdownMenu items={spaceMenu}>
+        {#snippet trigger(props: Record<string, unknown>)}
+          <IconButton
+            {...props}
+            icon="ellipsis"
+            size={30}
+            variant="ghost"
+            label={t('space_actions')}
           />
         {/snippet}
       </DropdownMenu>
@@ -428,6 +496,17 @@ async function createPage(parentId: string | null) {
 
 {#if activeSpace && canQuire('spaceManage')}
   <LabelManager bind:open={labelsOpen} {workspaceId} spaceId={activeSpace.id} />
+{/if}
+
+<!--
+  Mounted with the sidebar rather than behind `{#if open}`, and it costs nothing: every query in both
+  dialogs is `enabled: open`, so an unopened dialog makes no request. Rendering them conditionally
+  would also cut the closing animation off — the component would leave the tree on the same tick the
+  dialog decided to close — and it is what makes `bind:open` from a menu item work at all.
+-->
+{#if activeSpace}
+  <ExportDialog bind:open={exportOpen} {workspaceId} spaceId={activeSpace.id} />
+  <ImportDialog bind:open={importOpen} {workspaceId} space={activeSpace} />
 {/if}
 
 <style>

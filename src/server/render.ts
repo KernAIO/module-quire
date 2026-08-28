@@ -1,4 +1,17 @@
-import type { PageDoc, PageDocMark, PageDocNode } from '@kernhq/ui/editor/page-doc'
+import { renderMermaid } from '@kernhq/ui/editor/mermaid'
+import {
+  DEFAULT_PAGE_DIAGRAM_KIND,
+  PAGE_DIAGRAM_KINDS,
+  PAGE_DIAGRAM_MAX_SOURCE,
+  PAGE_DIAGRAM_MAX_TITLE,
+  PAGE_EMBED_MAX_DESCRIPTION,
+  PAGE_EMBED_MAX_SITE,
+  PAGE_EMBED_MAX_TITLE,
+  PAGE_EMBED_MAX_URL,
+  type PageDoc,
+  type PageDocMark,
+  type PageDocNode,
+} from '@kernhq/ui/editor/page-doc'
 
 /**
  * A page, drawn outside the browser.
@@ -154,6 +167,25 @@ export interface MacroPerson {
 }
 
 /**
+ * One of Kern's own objects, as a reader is allowed to see it.
+ *
+ * The same bargain `MacroPageRef` makes and for the same reason: everything here has already passed
+ * the audience's filter, so there is no way to express "this issue exists and you may not have it".
+ * `label` is the *type's* name — "Issue", "Page" — out of the module's own `objectTypes`, which is
+ * why a card can say what kind of thing it points at without this file knowing any module but its
+ * own. `services/objects.ts` is the only thing that builds one.
+ */
+export interface MacroObjectRef {
+  /** what the owning module calls this type, already translated by whoever declared it */
+  label: string
+  title: string
+  /** a Lucide icon name or an emoji; a name draws nothing here, exactly as on a page reference */
+  icon: string | null
+  href: string | null
+  subtitle: string | null
+}
+
+/**
  * What a reading macro was told, if anything.
  *
  * A discriminated union rather than a bag of optional fields, so a resolver cannot hand a children
@@ -168,6 +200,7 @@ export type MacroContent =
   | { kind: 'pages'; pages: MacroPageRef[] }
   | { kind: 'page'; page: MacroPageRef | null; html: string }
   | { kind: 'people'; people: MacroPerson[] }
+  | { kind: 'object'; object: MacroObjectRef | null }
 
 /**
  * The answer for one macro node, or null.
@@ -197,11 +230,26 @@ export interface MacroStrings {
   empty: string
   /** a page whose title is blank */
   untitled: string
+  /** a Mermaid diagram with nothing in it yet */
+  diagramEmpty: string
+  /** valid Mermaid this renderer does not draw — a subgraph, an `alt` frame, a shape it has no polygon for */
+  diagramUnsupported: string
+  /** a source that is not Mermaid at all */
+  diagramBroken: string
+  /** an Excalidraw or Draw.io block whose editor saved no picture */
+  diagramNoPicture: string
+  /** the words on the link to a diagram that lives somewhere else */
+  diagramOpen: string
 }
 
 export const DEFAULT_MACRO_STRINGS: MacroStrings = {
   empty: 'Nothing to show',
   untitled: 'Untitled',
+  diagramEmpty: 'This diagram has no source yet',
+  diagramUnsupported: 'This diagram uses something that cannot be drawn here',
+  diagramBroken: 'This diagram could not be drawn',
+  diagramNoPicture: 'No picture has been saved for this diagram',
+  diagramOpen: 'Open the diagram',
 }
 
 export interface RenderOptions {
@@ -311,6 +359,13 @@ export const READING_MACROS = [
   'contributors',
   'excerptInclude',
   'includePage',
+  /*
+   * The sixth. An object embed names an issue, a page or a channel by reference and holds no title,
+   * so what a reader may be told about it is a question rather than a stored answer — which is the
+   * definition of a reading macro and the reason it is drawn through `macroFrame` like the rest.
+   * `embed`, next door, is deliberately *not* one: it holds the unfurl of a public URL.
+   */
+  'objectEmbed',
   'pageChildren',
   'recentlyUpdated',
 ] as const
@@ -329,6 +384,7 @@ export const READING_MACRO_KINDS: Record<(typeof READING_MACROS)[number], string
   contributors: 'contributors',
   excerptInclude: 'excerpt-include',
   includePage: 'include-page',
+  objectEmbed: 'object',
   pageChildren: 'children',
   recentlyUpdated: 'recently-updated',
 }
@@ -416,6 +472,43 @@ function macroFrame(
   const inner = body || `<p class="kern-macro-empty">${escapeHtml(strings.empty)}</p>`
   return `<div${idAttr(node)} class="kern-macro" data-macro="${escapeHtml(kind)}">${inner}</div>`
 }
+
+/* ---------------------------------------------------------------------------------------------- */
+/* Diagrams and embeds                                                                              */
+/* ---------------------------------------------------------------------------------------------- */
+
+/**
+ * The narrowing the diagram and embed nodes apply, restated.
+ *
+ * Restated rather than imported for the reason the lozenge tones are: those functions live beside
+ * the Tiptap nodes, and this file must not load Tiptap. What keeps the two honest is the *ceilings*,
+ * which come out of `page-doc.ts` — the one file in `@kernhq/ui` that imports nothing — plus
+ * `render.test.ts`, which is a test and may import the extension at runtime to compare them.
+ */
+const diagramKind = (value: unknown): string =>
+  (PAGE_DIAGRAM_KINDS as readonly string[]).includes(String(value))
+    ? String(value)
+    : DEFAULT_PAGE_DIAGRAM_KIND
+
+const capped = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '')
+
+const trimmedTo = (value: unknown, max: number): string | null => {
+  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : ''
+  return text || null
+}
+
+/**
+ * A source nobody could draw, shown rather than hidden.
+ *
+ * This is the rule the whole diagram feature turns on: **a diagram never renders as a blank block.**
+ * A writer whose Mermaid has a typo in it sees their own text and a sentence saying what went
+ * wrong; a reader sees the same, which is what makes the writer find out. The alternative — an empty
+ * figure — is a page that looks finished and is not, on a published site nobody re-reads.
+ */
+const diagramFallback = (message: string, source: string): string =>
+  `<p class="kern-diagram-message">${escapeHtml(message)}</p>${
+    source ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''
+  }`
 
 /** `<td>` and `<th>` differ only in the tag, so the attributes are written once. */
 function cell(tag: 'td' | 'th', node: PageDocNode, children: string): string {
@@ -573,6 +666,101 @@ export const NODE_RENDERERS: Record<string, NodeRenderer> = {
   },
 
   /* -------------------------------------------------------------------------------------------- */
+  /* Diagrams                                                                                       */
+  /* -------------------------------------------------------------------------------------------- */
+
+  /**
+   * A diagram, drawn as far as this process honestly can — and never as nothing.
+   *
+   * Three kinds, three different answers, and the difference is not arbitrary:
+   *
+   *   - **Mermaid is drawn.** `renderMermaid` is a real server-side render: it parses the source and
+   *     emits an SVG, with no browser and no network, and it is the same function the editor's node
+   *     view calls, so a writer sees what a reader will. A source it refuses shows the source and
+   *     the reason.
+   *   - **Excalidraw and Draw.io are shown, not drawn.** They are editors rather than notations, so
+   *     the only faithful picture is the SVG their own editor exported — `svgFileId`, resolved
+   *     through the same `fileSrc` a picture uses. With no saved picture the block falls back to the
+   *     link the writer stored, and with neither it shows its source. It never renders empty.
+   *
+   * The SVG goes through unescaped, and it is the second string in this file that does. It is safe
+   * for the same kind of reason `includePage`'s HTML is: the only producer of it is `renderMermaid`,
+   * which escapes every character it takes from the source — asserted in its own tests, and asserted
+   * again here.
+   */
+  diagram: (node, _children, options) => {
+    const strings = options.macroStrings ?? DEFAULT_MACRO_STRINGS
+    const kind = diagramKind(node.attrs?.kind)
+    const source = capped(node.attrs?.source, PAGE_DIAGRAM_MAX_SOURCE)
+    const title = trimmedTo(node.attrs?.title, PAGE_DIAGRAM_MAX_TITLE)
+    const caption = title ? `<figcaption>${escapeHtml(title)}</figcaption>` : ''
+    const frame = (inner: string) =>
+      `<figure${idAttr(node)} class="kern-diagram" data-diagram="${escapeHtml(kind)}">${inner}${caption}</figure>`
+
+    if (kind === 'mermaid') {
+      const drawn = renderMermaid(source)
+      if (drawn.ok) return frame(drawn.svg)
+      const why =
+        drawn.reason === 'empty'
+          ? strings.diagramEmpty
+          : drawn.reason === 'unsupported'
+            ? strings.diagramUnsupported
+            : strings.diagramBroken
+      return frame(diagramFallback(why, source))
+    }
+
+    const fileId = typeof node.attrs?.svgFileId === 'string' ? node.attrs.svgFileId : null
+    const picture = fileId ? safeHref(options.fileSrc?.(fileId) ?? null) : null
+    if (picture)
+      return frame(`<img src="${escapeHtml(picture)}" alt="${escapeHtml(title ?? '')}" loading="lazy">`)
+
+    const href = safeHref(node.attrs?.href)
+    if (href)
+      return frame(
+        `<p class="kern-diagram-message">${escapeHtml(strings.diagramNoPicture)}</p>` +
+          `<a class="kern-diagram-link" href="${escapeHtml(href)}" rel="noreferrer noopener" target="_blank">${escapeHtml(
+            title ?? strings.diagramOpen,
+          )}</a>`,
+      )
+    return frame(diagramFallback(strings.diagramNoPicture, source))
+  },
+
+  /* -------------------------------------------------------------------------------------------- */
+  /* Embeds                                                                                         */
+  /* -------------------------------------------------------------------------------------------- */
+
+  /**
+   * A public URL and what it said about itself, drawn from the document alone.
+   *
+   * **Nothing here makes a request.** The unfurl happened once, in `services/unfurl.ts`, when a
+   * member inserted the block — so a page render, which happens on every read of every published
+   * page, is a pure function of what is stored. That is not only a performance argument: a renderer
+   * that fetched would be an SSRF reachable by anyone who can read a page, rather than by a member
+   * who can write one.
+   *
+   * There is no remote picture in the card on purpose. An `<img>` pointing at a third party tells
+   * that third party the address of everyone who reads the page, which is not a thing a wiki should
+   * arrange on its writers' behalf.
+   */
+  embed: (node) => {
+    const strings = DEFAULT_MACRO_STRINGS
+    const url = capped(node.attrs?.url, PAGE_EMBED_MAX_URL).trim()
+    const href = safeHref(url)
+    const title = trimmedTo(node.attrs?.title, PAGE_EMBED_MAX_TITLE) ?? (url || null)
+    const site = trimmedTo(node.attrs?.siteName, PAGE_EMBED_MAX_SITE)
+    const description = trimmedTo(node.attrs?.description, PAGE_EMBED_MAX_DESCRIPTION)
+
+    const label = `<span class="kern-embed-title">${escapeHtml(title ?? strings.untitled)}</span>`
+    const where = site ? `<span class="kern-embed-site">${escapeHtml(site)}</span>` : ''
+    // No `<a>` at all rather than a dead one, exactly as a rejected link mark degrades.
+    const head = href
+      ? `<a class="kern-embed-link" href="${escapeHtml(href)}" rel="noreferrer noopener" target="_blank">${label}${where}</a>`
+      : `${label}${where}`
+    const body = description ? `<p class="kern-embed-description">${escapeHtml(description)}</p>` : ''
+    return `<div${idAttr(node)} class="kern-embed" data-embed="">${head}${body}</div>`
+  },
+
+  /* -------------------------------------------------------------------------------------------- */
   /* The eight macros                                                                               */
   /* -------------------------------------------------------------------------------------------- */
 
@@ -649,6 +837,29 @@ export const NODE_RENDERERS: Record<string, NodeRenderer> = {
       return `${source}${content.html}`
     }),
 
+  /**
+   * One of Kern's own objects, resolved against this reader or not drawn at all.
+   *
+   * The fail-closed frame is the whole reason this is a reading macro rather than an embed: the
+   * document holds `tracker:issue:<id>` and nothing else, so a renderer with no resolver has no
+   * title to leak and no way to get one. `services/objects.ts` is the only thing that answers it,
+   * through the module's own `resolvers`, and it answers nothing at all for a published site.
+   */
+  objectEmbed: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.objectEmbed, node, options, (content, strings) => {
+      if (content?.kind !== 'object' || !content.object) return ''
+      const object = content.object
+      const body = `${emojiIcon(object.icon)}${escapeHtml(object.title || strings.untitled)}`
+      const href = safeHref(object.href)
+      const named = href ? `<a href="${escapeHtml(href)}">${body}</a>` : `<span>${body}</span>`
+      const subtitle = object.subtitle
+        ? `<span class="kern-object-subtitle">${escapeHtml(object.subtitle)}</span>`
+        : ''
+      return `<span class="kern-object"><span class="kern-object-kind">${escapeHtml(
+        object.label,
+      )}</span>${named}${subtitle}</span>`
+    }),
+
   contributors: (node, _children, options) =>
     macroFrame(READING_MACRO_KINDS.contributors, node, options, (content) => {
       if (content?.kind !== 'people' || content.people.length === 0) return ''
@@ -691,6 +902,14 @@ export function referencesIn(doc: PageDoc | null | undefined): { fileIds: string
   const pageIds = new Set<string>()
   const walk = (node: PageDocNode): void => {
     if (node.type === 'image' && typeof node.attrs?.fileId === 'string') fileIds.add(node.attrs.fileId)
+    /*
+     * A diagram this process cannot draw is shown as the SVG its own editor exported, which is an
+     * ordinary stored file — so it is collected here beside the pictures. Missing it would not have
+     * failed anything: the render would simply have fallen through to the link, on every Excalidraw
+     * drawing in the workspace, silently.
+     */
+    if (node.type === 'diagram' && typeof node.attrs?.svgFileId === 'string')
+      fileIds.add(node.attrs.svgFileId)
     if (node.type === 'pageMention' && typeof node.attrs?.id === 'string') pageIds.add(node.attrs.id)
     for (const child of node.content ?? []) walk(child)
   }
@@ -794,6 +1013,26 @@ export function textFromPageDoc(doc: PageDoc | null | undefined): string {
       // A picture contributes its alt text, the only part of it anybody can search for.
       case 'image':
         return typeof node.attrs?.alt === 'string' ? node.attrs.alt : ''
+      /*
+       * A diagram contributes its **name and not its source**. A Mermaid source is `A-->B` and an
+       * Excalidraw scene is a megabyte of JSON with a font name in it — putting either in the search
+       * body would make every diagram in the workspace match a search for `flowchart`, which is the
+       * same defect as the `noopener` one this function was written to fix.
+       */
+      case 'diagram':
+        return trimmedTo(node.attrs?.title, PAGE_DIAGRAM_MAX_TITLE) ?? ''
+      /*
+       * An embed contributes what a person reads on the card: the headline and the sentence under
+       * it. Not the URL — a search body full of addresses matches on `https` and on every hostname
+       * anybody has ever linked to.
+       */
+      case 'embed':
+        return [
+          trimmedTo(node.attrs?.title, PAGE_EMBED_MAX_TITLE),
+          trimmedTo(node.attrs?.description, PAGE_EMBED_MAX_DESCRIPTION),
+        ]
+          .filter(Boolean)
+          .join('\n')
       // Cells are joined with a tab, or two columns run together into one nonsense word.
       case 'tableRow':
         return (node.content ?? []).map(walk).join('\t')

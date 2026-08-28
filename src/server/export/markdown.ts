@@ -331,6 +331,51 @@ const BLOCK_WRITERS: Record<string, BlockWriter> = {
     return `${fence}${language}\n${body}\n${fence}`
   },
 
+  /**
+   * A diagram is its source in a fenced block, tagged with the tool that reads it.
+   *
+   * That is the whole point of storing the source rather than a picture: ```mermaid round-trips —
+   * GitHub and countless viewers draw it, our own importer reads it back as a diagram, and a reader
+   * with neither still sees what the diagram says. A rendered SVG in a Markdown file would be none
+   * of those things.
+   */
+  diagram: (node) => {
+    const kind = typeof node.attrs?.kind === 'string' ? node.attrs.kind : 'mermaid'
+    const source = typeof node.attrs?.source === 'string' ? node.attrs.source : ''
+    const title = typeof node.attrs?.title === 'string' ? node.attrs.title.trim() : ''
+    if (!source.trim()) return title ? `*${escapeInline(title)}*` : ''
+    const longest = Math.max(2, ...[...source.matchAll(/^`{3,}/gm)].map((m) => m[0].length))
+    const fence = '`'.repeat(longest + 1)
+    const caption = title ? `\n\n*${escapeInline(title)}*` : ''
+    return `${fence}${/^[a-z0-9-]{1,24}$/i.test(kind) ? kind : 'mermaid'}\n${source}\n${fence}${caption}`
+  },
+
+  /**
+   * An embed is a link. The card around it is this application's furniture, and the address is the
+   * only part of it that means anything in a file somebody opens somewhere else.
+   */
+  embed: (node) => {
+    const url = typeof node.attrs?.url === 'string' ? node.attrs.url.trim() : ''
+    if (!url) return ''
+    const title = typeof node.attrs?.title === 'string' ? node.attrs.title.trim() : ''
+    return title ? `[${escapeInline(title)}](${url})` : `<${url}>`
+  },
+
+  /**
+   * A Kern object — an issue, a person — is a link too, and deliberately not resolved here.
+   *
+   * Resolving it would put whatever the object says *today* into a file dated yesterday, and it
+   * would do it with the exporter's permissions rather than the reader's. The address is honest and
+   * the reader follows it, or does not.
+   */
+  objectEmbed: (node) => {
+    const href = typeof node.attrs?.href === 'string' ? node.attrs.href.trim() : ''
+    const label =
+      typeof node.attrs?.title === 'string' && node.attrs.title.trim() ? node.attrs.title.trim() : href
+    if (!href) return label ? escapeInline(label) : ''
+    return `[${escapeInline(label)}](${href})`
+  },
+
   horizontalRule: () => '---',
 
   table,

@@ -7,6 +7,7 @@ import {
 } from '@kernhq/ui/editor/page-doc'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_MACRO_STRINGS,
   hasReadingMacro,
   MARK_RENDERERS,
   type MacroContent,
@@ -283,7 +284,11 @@ describe('the macros that read other pages', () => {
 
   it('says so in the reader’s own language when the caller supplies the words', () => {
     const html = renderPageDoc(readingDoc('pageChildren'), {
-      macroStrings: { empty: 'Nichts anzuzeigen', untitled: 'Ohne Titel' },
+      macroStrings: {
+        ...DEFAULT_MACRO_STRINGS,
+        empty: 'Nichts anzuzeigen',
+        untitled: 'Ohne Titel',
+      },
     })
     expect(html).toContain('Nichts anzuzeigen')
     expect(html).not.toContain('Nothing to show')

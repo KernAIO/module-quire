@@ -121,6 +121,89 @@ const attr = (name: string, value: string | number | null | undefined): string =
 /** `id` when the writer's editor stamped one, so a heading can be linked to. */
 const idAttr = (node: PageDocNode): string => attr('id', safeId(node.attrs?.id))
 
+/**
+ * A page a macro is allowed to name.
+ *
+ * Everything here has already passed the audience's filter — a resolver hands this back only for a
+ * page the reader in question may be shown. Which is why there is no `visible` flag on it and no
+ * way to express "this page exists but you may not have it": the whole point of the rule is that a
+ * page a reader may not see does not reach the renderer at all, so it cannot be drawn as a title
+ * with a dead link.
+ *
+ * `href` is separately nullable, for the ordinary case where a page may be *named* but the render
+ * has no address to send anybody to — a Markdown export of one page that mentions another.
+ */
+export interface MacroPageRef {
+  id: string
+  title: string
+  /** a Lucide icon name or an emoji, as the page carries it */
+  icon: string | null
+  /** where to send a reader, or null to draw the title as plain text */
+  href: string | null
+  /** already formatted for the reader's locale; the renderer does no date arithmetic */
+  updated: string | null
+  /** plain text, already trimmed — never markup */
+  excerpt: string | null
+  /** the pages under this one, when the macro asked for more than one level */
+  children?: MacroPageRef[]
+}
+
+/** Somebody who has written on the page. Never carries an id into the output. */
+export interface MacroPerson {
+  name: string
+}
+
+/**
+ * What a reading macro was told, if anything.
+ *
+ * A discriminated union rather than a bag of optional fields, so a resolver cannot hand a children
+ * list to `includePage` and have it render as nothing while looking correct at the call site.
+ *
+ * `page.html` is the one field here that is HTML rather than data, and it is safe for exactly one
+ * reason: **the only legal producer of it is `renderPageDoc` itself**, called by `macros.ts` on the
+ * included page's stored document with the same escaping this file applies to everything else.
+ * Anything else putting a string there is putting unescaped markup on somebody's page.
+ */
+export type MacroContent =
+  | { kind: 'pages'; pages: MacroPageRef[] }
+  | { kind: 'page'; page: MacroPageRef | null; html: string }
+  | { kind: 'people'; people: MacroPerson[] }
+
+/**
+ * The answer for one macro node, or null.
+ *
+ * Synchronous, because `renderPageDoc` is: a caller collects the macros with `macrosIn`, resolves
+ * them all in one pass against one audience, and hands back a lookup. Resolving inside the renderer
+ * would mean a database round trip per macro, in render order, on a request that is otherwise two
+ * queries — the same arrangement `fileSrc` and `pageHref` already use, for the same reason.
+ *
+ * **Null is the fail-closed answer and it is the default.** No resolver at all, a resolver that has
+ * nothing for this node, a macro whose page was deleted: all three render the macro's frame and
+ * nothing else. To leak a title somebody has to construct an audience, and `macros.ts` offers
+ * exactly two.
+ */
+export type MacroResolver = (node: PageDocNode) => MacroContent | null
+
+/**
+ * The handful of words a macro needs, in the reader's language.
+ *
+ * The renderer is a pure function and has no message runtime — `@kernhq/ui`'s `t()` is Svelte and
+ * must never load in this process. So the caller, which knows who is reading, passes the words in;
+ * the defaults below are English and are what a caller that has not thought about it gets, which is
+ * the same bargain the `Untitled` fallback on a page mention already makes.
+ */
+export interface MacroStrings {
+  /** shown in place of a macro that resolved to nothing */
+  empty: string
+  /** a page whose title is blank */
+  untitled: string
+}
+
+export const DEFAULT_MACRO_STRINGS: MacroStrings = {
+  empty: 'Nothing to show',
+  untitled: 'Untitled',
+}
+
 export interface RenderOptions {
   /**
    * Turn a stored file id into something a reader's browser can fetch.
@@ -136,6 +219,15 @@ export interface RenderOptions {
    * worse than none — without this a page mention degrades to a plain, still-readable label.
    */
   pageHref?: (pageId: string) => string | null
+  /**
+   * What a macro that reads other pages was told about them, for this reader.
+   *
+   * Absent is the safe state and the one every caller written before macros existed already has.
+   * See `MacroResolver`.
+   */
+  macros?: MacroResolver
+  /** The words a macro needs, in the reader's language. English when nobody says otherwise. */
+  macroStrings?: MacroStrings
 }
 
 type NodeRenderer = (node: PageDocNode, children: string, options: RenderOptions) => string
@@ -188,6 +280,141 @@ function renderMarks(html: string, marks: PageDocMark[] | null | undefined): str
     if (render) out = render(out, mark.attrs)
   }
   return out
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/* Macros                                                                                           */
+/* ---------------------------------------------------------------------------------------------- */
+
+/**
+ * The lozenge colours, restated rather than imported.
+ *
+ * `@kernhq/ui` is a peer dependency and its editor half loads Tiptap and Svelte, neither of which
+ * belongs in a backend process — so this file imports **types** from it and nothing else, exactly as
+ * it already restates the callout tones and the table alignments. What keeps the two honest is
+ * `render.test.ts`, which is a test and may import at runtime: it compares this list against
+ * `STATUS_TONES` in the package, in both directions.
+ */
+export const STATUS_TONES = ['neutral', 'info', 'success', 'warning', 'danger'] as const
+const DEFAULT_STATUS_TONE = 'neutral'
+const statusTone = (value: unknown): string =>
+  (STATUS_TONES as readonly string[]).includes(String(value)) ? String(value) : DEFAULT_STATUS_TONE
+
+/**
+ * The macro nodes that need an audience before they can draw anything.
+ *
+ * Exported for the same parity test: `PAGE_DOC_READING_MACROS` in `@kernhq/ui` is the writer's half
+ * of this list, and a sixth reading macro added there without a fail-closed case here is exactly the
+ * defect the whole arrangement exists to prevent.
+ */
+export const READING_MACROS = [
+  'contributors',
+  'excerptInclude',
+  'includePage',
+  'pageChildren',
+  'recentlyUpdated',
+] as const
+
+/**
+ * The `data-macro` value each reading macro draws with, in one place.
+ *
+ * The node is named in the document's own vocabulary (`pageChildren`) and in the markup contract's
+ * (`children`), and both halves have to agree with `nodes/macros.ts` in `@kernhq/ui`. Written as a
+ * map the renderers read rather than as a literal in each case, because the second consumer of it
+ * is `hasReadingMacro` — and a marker list that had drifted from the renderers would make that
+ * function answer "no macros here" about a page that has one, which is a stored public render
+ * nobody re-resolves. `render.test.ts` holds the keys to `READING_MACROS`.
+ */
+export const READING_MACRO_KINDS: Record<(typeof READING_MACROS)[number], string> = {
+  contributors: 'contributors',
+  excerptInclude: 'excerpt-include',
+  includePage: 'include-page',
+  pageChildren: 'children',
+  recentlyUpdated: 'recently-updated',
+}
+
+/**
+ * Does this rendered HTML contain a macro that had to be resolved against a reader?
+ *
+ * The cheap question the public read path asks before deciding whether to re-render a page. Stored
+ * publish-time HTML has reading macros as **empty frames** — resolving them at publish time would
+ * freeze a set of titles into a row and keep serving them after the pages were unpublished, which
+ * is precisely the leak this feature's rule exists to prevent. So the frames are drawn empty and
+ * filled per read, and this is how a read finds out whether it has to do that work at all.
+ *
+ * A string search rather than a parse: the alternative is decoding a Y.Doc on every public page
+ * view to discover that almost none of them have a macro.
+ */
+export const hasReadingMacro = (html: string): boolean =>
+  Object.values(READING_MACRO_KINDS).some((kind) => html.includes(`data-macro="${kind}"`))
+
+/** A boolean attribute out of a document, where `"true"` is what an HTML attribute carries. */
+const macroFlag = (value: unknown): boolean => value === true || value === 'true'
+
+/**
+ * A page's icon, but only when the icon *is* the character.
+ *
+ * A page stores either an emoji or a Lucide icon name, and this renderer has no icon set — printing
+ * `book` in front of a title because somebody chose the book icon is worse than printing nothing.
+ * An emoji is outside ASCII, which is the whole test: the character carries itself. Counted by code
+ * rather than matched by a regex, for the reason `stripUrlNoise` above gives.
+ */
+function emojiIcon(icon: string | null): string {
+  if (!icon) return ''
+  let outsideAscii = false
+  for (let i = 0; i < icon.length; i++) if (icon.charCodeAt(i) > 127) outsideAscii = true
+  return outsideAscii ? `<span class="kern-macro-icon">${escapeHtml(icon)}</span>` : ''
+}
+
+/** One page in a macro's answer: a link where there is an address, plain text where there is not. */
+function pageLink(page: MacroPageRef, strings: MacroStrings): string {
+  const body = `${emojiIcon(page.icon)}${escapeHtml(page.title || strings.untitled)}`
+  const href = safeHref(page.href)
+  return href ? `<a href="${escapeHtml(href)}">${body}</a>` : `<span>${body}</span>`
+}
+
+/** The same, introducing prose lifted from that page, so a reader can see where it came from. */
+const pageSource = (page: MacroPageRef, strings: MacroStrings): string =>
+  `<span class="kern-macro-source">${pageLink(page, strings)}</span>`
+
+/**
+ * A tree of pages, as nested lists.
+ *
+ * Recursive because a children macro may go several levels down, and depth is meaningful — a flat
+ * list of everything under a page says nothing about which section a page is in. The recursion is
+ * bounded by the resolver, which builds the tree; this function walks whatever it was handed.
+ */
+function pageList(pages: MacroPageRef[], strings: MacroStrings): string {
+  if (pages.length === 0) return ''
+  const rows = pages
+    .map((page) => {
+      const excerpt = page.excerpt ? `<p class="kern-macro-excerpt">${escapeHtml(page.excerpt)}</p>` : ''
+      const updated = page.updated ? `<p class="kern-macro-meta">${escapeHtml(page.updated)}</p>` : ''
+      const nested = page.children?.length ? pageList(page.children, strings) : ''
+      return `<li>${pageLink(page, strings)}${excerpt}${updated}${nested}</li>`
+    })
+    .join('')
+  return `<ul class="kern-macro-pages">${rows}</ul>`
+}
+
+/**
+ * The frame every reading macro draws, and the one place the fail-closed rule is implemented.
+ *
+ * `options.macros` is consulted once; a null answer, a wrong-shaped answer and an empty answer are
+ * all the same thing to a reader and all draw the "nothing to show" line. That is what makes the
+ * absence of a resolver the *safe* state rather than a case somebody has to remember: there is no
+ * branch here that reads a database, so no caller can accidentally get one.
+ */
+function macroFrame(
+  kind: string,
+  node: PageDocNode,
+  options: RenderOptions,
+  draw: (content: MacroContent | null, strings: MacroStrings) => string,
+): string {
+  const strings = options.macroStrings ?? DEFAULT_MACRO_STRINGS
+  const body = draw(options.macros?.(node) ?? null, strings)
+  const inner = body || `<p class="kern-macro-empty">${escapeHtml(strings.empty)}</p>`
+  return `<div${idAttr(node)} class="kern-macro" data-macro="${escapeHtml(kind)}">${inner}</div>`
 }
 
 /** `<td>` and `<th>` differ only in the tag, so the attributes are written once. */
@@ -344,6 +571,90 @@ export const NODE_RENDERERS: Record<string, NodeRenderer> = {
     if (!href) return `<span class="kern-page-mention"${data}>${body}</span>`
     return `<a class="kern-page-mention" href="${escapeHtml(href)}"${data}>${body}</a>`
   },
+
+  /* -------------------------------------------------------------------------------------------- */
+  /* The eight macros                                                                               */
+  /* -------------------------------------------------------------------------------------------- */
+
+  /*
+   * The three that resolve from the document, and are therefore safe on a page with no reader.
+   *
+   * An excerpt is a region of *this* page marked as quotable, so it draws its own prose — unless the
+   * writer hid it, which is the case for a page whose only job is to be quoted somewhere else.
+   * `data-hidden` rather than dropping the children here: the CSS hides it, so the same HTML serves
+   * a print stylesheet that may reasonably decide to show it.
+   */
+  excerpt: (node, children) =>
+    `<div${idAttr(node)} class="kern-excerpt" data-macro="excerpt"${
+      macroFlag(node.attrs?.hidden) ? ' data-hidden="true"' : ''
+    }>${children}</div>`,
+
+  /*
+   * The expand, byte-for-byte the arrangement `nodes/macros.ts` renders — see the note there for why
+   * it and the toggle both exist. `open` is the writer's stored decision, which is the whole
+   * difference: a toggle's open state belongs to the reader and is not in the document.
+   */
+  expand: (node, children) =>
+    `<details${idAttr(node)} class="kern-expand" data-macro="expand"${
+      macroFlag(node.attrs?.open) ? ' open' : ''
+    }>${children}</details>`,
+
+  /*
+   * The lozenge. Inline, and the only macro with nothing to resolve at all: the word and the colour
+   * are both in the document, which is why it is the one that works identically for a signed-in
+   * reader, a published site, a PDF and a Markdown file.
+   */
+  statusLozenge: (node, children) =>
+    `<span class="kern-status" data-status="${statusTone(node.attrs?.tone)}">${children}</span>`,
+
+  /*
+   * The five that read other pages. Each draws `options.macros`' answer or an empty frame, and the
+   * empty frame is what a caller with no resolver gets — see `MacroResolver`.
+   */
+  pageChildren: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.pageChildren, node, options, (content, strings) =>
+      content?.kind === 'pages' ? pageList(content.pages, strings) : '',
+    ),
+
+  recentlyUpdated: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.recentlyUpdated, node, options, (content, strings) =>
+      content?.kind === 'pages' ? pageList(content.pages, strings) : '',
+    ),
+
+  /*
+   * Another page's excerpt. The extract is plain text — `macros.ts` flattens it rather than lifting
+   * markup out of one document into another, where a half-open tag would be the reader's problem.
+   */
+  excerptInclude: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.excerptInclude, node, options, (content, strings) => {
+      if (content?.kind !== 'page' || !content.page) return ''
+      const text = content.page.excerpt ?? ''
+      if (!text) return ''
+      const source = node.attrs?.showTitle === false ? '' : pageSource(content.page, strings)
+      return `${source}<p>${escapeHtml(text)}</p>`
+    }),
+
+  /*
+   * Another page's whole body.
+   *
+   * `content.html` goes through unescaped and is the only string in this file that does. It is safe
+   * because `macros.ts` is the only thing that can produce it, and it produces it by calling this
+   * very function on the included page's stored document — so every character in it has already been
+   * escaped here. See the note on `MacroContent`.
+   */
+  includePage: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.includePage, node, options, (content, strings) => {
+      if (content?.kind !== 'page' || !content.page || !content.html) return ''
+      const source = node.attrs?.showTitle === false ? '' : pageSource(content.page, strings)
+      return `${source}${content.html}`
+    }),
+
+  contributors: (node, _children, options) =>
+    macroFrame(READING_MACRO_KINDS.contributors, node, options, (content) => {
+      if (content?.kind !== 'people' || content.people.length === 0) return ''
+      const names = content.people.map((p) => `<li>${escapeHtml(p.name)}</li>`).join('')
+      return `<ul class="kern-macro-pages">${names}</ul>`
+    }),
 }
 
 function renderNode(node: PageDocNode, options: RenderOptions): string {
@@ -387,6 +698,51 @@ export function referencesIn(doc: PageDoc | null | undefined): { fileIds: string
   return { fileIds: [...fileIds], pageIds: [...pageIds] }
 }
 
+/**
+ * A macro instance, named by what it asks for rather than by where it sits.
+ *
+ * Two identical macros on one page are one question and get one answer, which is what makes the key
+ * the *attributes* rather than the node's `id` — and means the resolver works on a document written
+ * by an importer that never stamped ids. `id` is excluded deliberately: including it would ask the
+ * database the same question twice for two blocks that must draw the same thing.
+ *
+ * The keys are sorted, because `JSON.stringify` preserves insertion order and two clients writing
+ * the same attributes in a different order would otherwise be two questions.
+ */
+export function macroKey(node: PageDocNode): string {
+  const attrs = node.attrs ?? {}
+  const parts = Object.keys(attrs)
+    .filter((name) => name !== 'id')
+    .sort()
+    .map((name) => `${name}=${JSON.stringify(attrs[name] ?? null)}`)
+  return `${node.type ?? ''}(${parts.join(',')})`
+}
+
+/**
+ * Every reading macro in a document, de-duplicated — the `referencesIn` of the macro half.
+ *
+ * A caller resolves these against one audience in one pass and hands back a `MacroResolver`. The
+ * three macros that resolve from the document itself are not here: they need nothing looked up, so
+ * collecting them would only invite a caller to ask a database about a status lozenge.
+ */
+export function macrosIn(doc: PageDoc | null | undefined): PageDocNode[] {
+  const reading = new Set<string>(READING_MACROS)
+  const seen = new Set<string>()
+  const found: PageDocNode[] = []
+  const walk = (node: PageDocNode): void => {
+    if (typeof node.type === 'string' && reading.has(node.type)) {
+      const key = macroKey(node)
+      if (!seen.has(key)) {
+        seen.add(key)
+        found.push(node)
+      }
+    }
+    for (const child of node.content ?? []) walk(child)
+  }
+  for (const node of doc?.content ?? []) walk(node)
+  return found
+}
+
 /** Nodes whose children are separate blocks, so their text needs a line between each. */
 const BLOCK_PARENTS = new Set([
   'blockquote',
@@ -395,6 +751,8 @@ const BLOCK_PARENTS = new Set([
   'details',
   'detailsContent',
   'doc',
+  'excerpt',
+  'expand',
   'listItem',
   'orderedList',
   'table',
@@ -413,6 +771,12 @@ const TEXT_LIMIT = 100_000
  * *as markup* — so a page containing one link put
  * `<link class="null" href="…" rel="noreferrer noopener" target="_blank">` into the search body,
  * and every page in the workspace matched a search for "noopener".
+ *
+ * **A macro contributes nothing.** The five that read other pages are atoms with no content, so they
+ * fall out of this walk on their own — and that is the behaviour to keep rather than an omission to
+ * fix. What a children macro would contribute is other pages' titles, resolved against nobody, into
+ * a search index that is read by everybody: the same leak the render rule exists to prevent, one
+ * layer further from where anybody would look for it.
  */
 export function textFromPageDoc(doc: PageDoc | null | undefined): string {
   if (!doc || !Array.isArray(doc.content)) return ''

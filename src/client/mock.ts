@@ -24,6 +24,11 @@ import type {
   RecentEntry,
   RowRef,
   Space,
+  Template,
+  TemplateChoice,
+  TemplateKind,
+  TemplateResult,
+  TemplateVariable,
   TransferCounts,
   View,
   ViewConfig,
@@ -1136,6 +1141,91 @@ export function createMockQuireApi() {
     row.finishedAt = new Date().toISOString()
   }
 
+  /**
+   * The five starters, **in English only**.
+   *
+   * The real ones are constants on the server with a five-locale table beside them, resolved against
+   * the reader's own locale — `server/services/templates.ts` explains why they cannot live in this
+   * package's message bundle. This mock has no server and no principal, so it carries the English
+   * names and nothing else: it is the demo interface, and a demo of the picker is a demo of the
+   * shape rather than of the translation. Anything that needs to see a starter in Persian needs a
+   * server.
+   */
+  const STARTER_NAMES: Array<[string, string, string, string]> = [
+    ['meeting-notes', 'users', 'Meeting notes', 'Who was there, what was decided, and who does what next.'],
+    [
+      'decision-record',
+      'flag',
+      'Decision record',
+      'One decision, why it was taken, and what it commits you to.',
+    ],
+    [
+      'requirements',
+      'target',
+      'Requirements',
+      'What a piece of work has to do, and what it deliberately does not.',
+    ],
+    [
+      'retrospective',
+      'refresh-cw',
+      'Retrospective',
+      'What went well, what got in the way, and what to change.',
+    ],
+    ['how-to', 'wrench', 'How-to', 'A task somebody can follow from start to finish.'],
+  ]
+
+  /**
+   * One template somebody in this workspace already saved, so the picker is not five shipped entries
+   * and nothing else — the interesting half of the feature is the one a colleague made.
+   */
+  const templateRows: Template[] = [
+    {
+      id: uid(700),
+      workspaceId: '' as Template['workspaceId'],
+      spaceId: uid(1),
+      kind: 'page',
+      key: null,
+      builtIn: false,
+      name: 'Weekly review',
+      description: 'What moved this week, and what is stuck.',
+      icon: 'calendar-days',
+      doc: {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Week {{week}} · {{author}}' }] }],
+      },
+      variables: [
+        {
+          name: 'week',
+          label: 'Which week',
+          type: 'text',
+          options: [],
+          default: null,
+          required: true,
+        },
+      ],
+      createdBy: COLLEAGUE as Template['createdBy'],
+      createdAt: iso(9e6),
+      updatedAt: iso(9e6),
+    },
+  ]
+
+  const templateChoice = (row: Template): TemplateChoice => ({
+    id: row.id,
+    key: row.key,
+    builtIn: row.builtIn,
+    kind: row.kind,
+    spaceId: row.spaceId,
+    name: row.name,
+    description: row.description,
+    icon: row.icon,
+    variables: row.variables,
+    updatedAt: row.updatedAt,
+  })
+
+  /** The same single-pass, text-only substitution the server does — see `services/templates.ts`. */
+  const fill = (text: string, values: Record<string, string>) =>
+    text.replace(/\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g, (whole, name: string) => values[name] ?? whole)
+
   return {
     spaces: {
       list: async ({ includeArchived = false }: { includeArchived?: boolean } = {}) =>
@@ -1695,6 +1785,190 @@ export function createMockQuireApi() {
       list: async ({ limit = 20 }: { limit?: number } = {}) => {
         for (const row of importJobs) advanceImport(row)
         return importJobs.slice(0, limit).map(({ report: _report, ...summary }) => summary)
+      },
+    },
+
+    /**
+     * What somebody writes with.
+     *
+     * The starters and the rows come back as one list with the override rule applied, exactly as the
+     * server does it — a row carrying a starter's key stands in that starter's place rather than
+     * appearing beside it, which is the whole shape a picker has to draw.
+     *
+     * `instantiate` makes a real page in the tree. It cannot write a *body*: there is no collab
+     * service behind `dev:mock`, and a page's prose lives there rather than in this list. So the
+     * title is substituted and the page appears where it should, and the body is the one thing a
+     * demo of this feature cannot show.
+     */
+    templates: {
+      list: async ({
+        kind = 'page',
+        spaceId = null,
+      }: {
+        kind?: TemplateKind
+        spaceId?: string | null
+      } = {}) => {
+        const rows = templateRows.filter(
+          (row) => row.kind === kind && (row.spaceId === null || row.spaceId === spaceId),
+        )
+        const byKey = new Map(rows.filter((row) => row.key).map((row) => [row.key as string, row]))
+        const out: TemplateChoice[] = []
+        if (kind === 'page')
+          for (const [key, icon, name, description] of STARTER_NAMES) {
+            const override = byKey.get(key)
+            out.push(
+              override
+                ? templateChoice(override)
+                : {
+                    id: null,
+                    key,
+                    builtIn: true,
+                    kind: 'page',
+                    spaceId: null,
+                    name,
+                    description,
+                    icon,
+                    variables: [],
+                    updatedAt: null,
+                  },
+            )
+          }
+        for (const row of rows)
+          if (!row.key || !STARTER_NAMES.some(([key]) => key === row.key)) out.push(templateChoice(row))
+        return out
+      },
+
+      get: async ({ templateId }: { templateId: string }) => {
+        const row = templateRows.find((t) => t.id === templateId)
+        if (!row) throw notFound('Template')
+        return row
+      },
+
+      createFromPage: async (input: {
+        kind?: TemplateKind
+        sourceId: string
+        spaceId?: string | null
+        name: string
+        description?: string
+        icon?: string | null
+        variables?: TemplateVariable[]
+        key?: string | null
+      }) => {
+        if (input.key && templateRows.some((t) => t.key === input.key))
+          throw Object.assign(new Error('This workspace already has its own version of that template'), {
+            code: 'CONFLICT',
+          })
+        const source = input.kind === 'space' ? null : found(input.sourceId)
+        const row: Template = {
+          id: nextId(),
+          workspaceId: '' as Template['workspaceId'],
+          spaceId: input.kind === 'space' ? null : (input.spaceId ?? null),
+          kind: input.kind ?? 'page',
+          key: input.key ?? null,
+          builtIn: Boolean(input.key),
+          name: input.name,
+          description: input.description ?? '',
+          icon: input.icon ?? null,
+          // No collab service, so there is no body to read — the title stands in for the prose, which
+          // is enough for the picker and honest about what a mock can know.
+          doc:
+            input.kind === 'space'
+              ? { pages: [] }
+              : {
+                  type: 'doc',
+                  content: [{ type: 'paragraph', content: [{ type: 'text', text: source?.title ?? '' }] }],
+                },
+          variables: input.variables ?? [],
+          createdBy: ME as Template['createdBy'],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        templateRows.push(row)
+        return row
+      },
+
+      update: async ({ templateId, ...patch }: { templateId: string } & Partial<Template>) => {
+        const row = templateRows.find((t) => t.id === templateId)
+        if (!row) throw notFound('Template')
+        Object.assign(row, patch, { updatedAt: new Date().toISOString() })
+        return row
+      },
+
+      remove: async ({ templateId }: { templateId: string }) => {
+        const at = templateRows.findIndex((t) => t.id === templateId)
+        if (at < 0) throw notFound('Template')
+        templateRows.splice(at, 1)
+        return { ok: true as const }
+      },
+
+      instantiate: async (input: {
+        templateId?: string | null
+        starterKey?: string | null
+        spaceId?: string | null
+        parentId?: string | null
+        afterId?: string | null
+        title?: string
+        key?: string | null
+        name?: string
+        values?: Record<string, string>
+      }): Promise<TemplateResult> => {
+        const row = input.templateId
+          ? templateRows.find((t) => t.id === input.templateId)
+          : templateRows.find((t) => t.key === input.starterKey)
+        const starter = STARTER_NAMES.find(([key]) => key === input.starterKey)
+        if (!row && !starter) throw notFound('Template')
+
+        const values: Record<string, string> = {
+          date: new Date().toLocaleDateString(),
+          time: new Date().toLocaleTimeString(),
+          author: 'You',
+          space: spaces.find((s) => s.id === input.spaceId)?.name ?? '',
+          ...(input.values ?? {}),
+        }
+        for (const variable of row?.variables ?? [])
+          if (variable.required && !values[variable.name])
+            throw Object.assign(new Error(`"${variable.label}" is needed before this can be made`), {
+              code: 'BAD_REQUEST',
+            })
+
+        if (row?.kind === 'space') {
+          if (!input.key || !input.name)
+            throw Object.assign(new Error('A space template needs a name and an address'), {
+              code: 'BAD_REQUEST',
+            })
+          const space: Space = {
+            id: nextId(),
+            workspaceId: '' as Space['workspaceId'],
+            key: input.key,
+            name: fill(input.name, values),
+            description: '',
+            icon: null,
+            visibility: 'open',
+            homepageId: null,
+            createdBy: ME as Space['createdBy'],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            archivedAt: null,
+          }
+          spaces.push(space)
+          return { spaceId: space.id, pageId: null, pageCount: 0 }
+        }
+
+        const spaceId = input.spaceId
+        if (!spaceId) throw Object.assign(new Error('A page template needs a space'), { code: 'BAD_REQUEST' })
+        const siblings = pages
+          .filter((p) => p.spaceId === spaceId && p.parentId === (input.parentId ?? null) && !p.deletedAt)
+          .sort((a, b) => (a._order < b._order ? -1 : 1))
+        const title = fill(input.title || row?.name || starter?.[2] || '', values)
+        const created = page(++seq, spaceId, title, `${siblings.at(-1)?._order ?? 'a'}m`, null, {
+          icon: row?.icon ?? starter?.[1] ?? null,
+        })
+        created.id = uid(seq)
+        created.parentId = input.parentId ?? null
+        created.createdAt = new Date().toISOString()
+        created.updatedAt = created.createdAt
+        pages.push(created)
+        return { spaceId, pageId: created.id, pageCount: 1 }
       },
     },
 

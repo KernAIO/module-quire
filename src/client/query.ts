@@ -54,6 +54,23 @@ export const quireKeys = {
     ['quire', 'publication', workspaceId, spaceId] as const,
   site: (workspaceId: string, slug: string) => ['quire', 'publication', workspaceId, 'site', slug] as const,
 
+  /**
+   * What may be made here.
+   *
+   * `template` is the entity `templates.createFromPage|update|remove` announce, so somebody saving a
+   * page as a template puts it in everybody else's picker without a reload — which matters more here
+   * than for most lists, because the whole point of a template is that a colleague finds it.
+   *
+   * Keyed by space *and* kind: a space-scoped template is offered in one space and not the next, so
+   * one key for the workspace would serve the Handbook's list to Engineering. `spaceId` is null for
+   * the workspace-wide question the "New space" picker asks, which is a different answer and
+   * therefore a different key.
+   */
+  templates: (workspaceId: string, kind: string, spaceId: string | null) =>
+    ['quire', 'template', workspaceId, kind, spaceId ?? 'workspace'] as const,
+  template: (workspaceId: string, templateId: string) =>
+    ['quire', 'template', workspaceId, templateId] as const,
+
   /** the schema — properties and views — which every open tab of a database is drawing */
   database: (workspaceId: string, databaseId: string) =>
     ['quire', 'database', workspaceId, databaseId] as const,

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { Button, Dialog, Field, Input, Select, Textarea } from '@kernhq/ui'
-import { useQueryClient } from '@tanstack/svelte-query'
+import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getQuireApi } from '../api-instance.js'
 import { t } from '../i18n.js'
 import type { Space } from '../index.js'
@@ -22,6 +22,25 @@ let description = $state('')
 let visibility = $state<Space['visibility']>('open')
 let saving = $state(false)
 let error = $state<string | null>(null)
+
+/**
+ * A whole space somebody saved, so a team can be given the shape as well as the name.
+ *
+ * There is no shipped space template and there should not be: the five starters Kern ships are
+ * pages, because a page template is generic in a way a space's organisation never is. So this
+ * control appears only once somebody in the workspace has saved one — an empty picker is a question
+ * with one answer.
+ *
+ * `spaceId: null` is the workspace-wide question, which is the only one that can be asked before
+ * there is a space.
+ */
+let fromTemplate = $state('')
+const templatesQuery = createQuery(() => ({
+  queryKey: quireKeys.templates(workspaceId, 'space', null),
+  enabled: open && Boolean(workspaceId),
+  queryFn: () => api.templates.list({ workspaceId, kind: 'space', spaceId: null }),
+}))
+const spaceTemplates = $derived((templatesQuery.data ?? []).filter((choice) => choice.id))
 
 /**
  * The key is derived from the name until somebody types one, and then left alone. Overwriting a key
@@ -47,16 +66,22 @@ function reset() {
   key = ''
   description = ''
   visibility = 'open'
+  fromTemplate = ''
   keyTouched = false
   error = null
 }
 
-async function submit() {
-  if (!valid || saving) return
-  saving = true
-  error = null
-  try {
-    const space = await api.spaces.create({
+/**
+ * Make the space, from a template or from nothing.
+ *
+ * `templates.instantiate` makes the space itself — it has to, because it also writes the tree in the
+ * same transaction — so the two fields it has no opinion about are applied afterwards rather than
+ * dropped. A dialog that asks for a description and then quietly ignores it is worse than one that
+ * never asked.
+ */
+async function make(): Promise<Space> {
+  if (!fromTemplate)
+    return api.spaces.create({
       workspaceId,
       key,
       name: name.trim(),
@@ -64,6 +89,29 @@ async function submit() {
       icon: null,
       visibility,
     })
+
+  const made = await api.templates.instantiate({
+    workspaceId,
+    templateId: fromTemplate,
+    key,
+    name: name.trim(),
+  })
+  if (description.trim() || visibility !== 'open')
+    return api.spaces.update({
+      workspaceId,
+      spaceId: made.spaceId,
+      description: description.trim(),
+      visibility,
+    })
+  return api.spaces.get({ workspaceId, spaceId: made.spaceId })
+}
+
+async function submit() {
+  if (!valid || saving) return
+  saving = true
+  error = null
+  try {
+    const space = await make()
     await client.invalidateQueries({ queryKey: quireKeys.spaces(workspaceId) })
     open = false
     reset()
@@ -119,7 +167,28 @@ async function submit() {
       {/snippet}
     </Field>
 
-    {#if error}<p class="error">{error}</p>{/if}
+    <!--
+      Only once there is something to choose between. With no space templates saved this is a menu
+      whose single entry is "an empty space", which teaches somebody that the control does nothing.
+    -->
+    {#if spaceTemplates.length > 0}
+      <Field label={t('template_new_space_from')}>
+        {#snippet children(id: string)}
+          <Select
+            {id}
+            ariaLabel={t('template_new_space_from')}
+            value={fromTemplate}
+            options={[
+              { value: '', label: t('template_new_space_blank') },
+              ...spaceTemplates.map((choice) => ({ value: choice.id as string, label: choice.name })),
+            ]}
+            onValueChange={(v: string) => (fromTemplate = v)}
+          />
+        {/snippet}
+      </Field>
+    {/if}
+
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
   </div>
 
   {#snippet footer()}

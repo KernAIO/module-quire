@@ -2,6 +2,7 @@
 import { Button, EmptyState, navigation, Skeleton, session } from '@kernhq/ui'
 import { createQuery } from '@tanstack/svelte-query'
 import { getQuireApi } from '../api-instance.js'
+import TemplatePicker from '../components/TemplatePicker.svelte'
 import { t } from '../i18n.js'
 import { canQuire } from '../permissions.js'
 import { quireKeys } from '../query.js'
@@ -57,6 +58,16 @@ const firstPageId = $derived(
 )
 
 let creating = $state(false)
+/**
+ * The first page of an empty space is the one page most worth offering a template for — a handbook
+ * that starts as a how-to is a handbook somebody kept writing. The picker still opens on **Blank
+ * page**, so nothing about starting from nothing got slower.
+ */
+let pickerOpen = $state(false)
+
+const open = (pageId: string) =>
+  void navigation.go(`/${workspaceSlug}/quire/${encodeURIComponent(spaceKey)}/${encodeURIComponent(pageId)}`)
+
 async function createFirst() {
   if (!space || creating) return
   creating = true
@@ -70,9 +81,7 @@ async function createFirst() {
       icon: null,
       afterId: null,
     })
-    void navigation.go(
-      `/${workspaceSlug}/quire/${encodeURIComponent(spaceKey)}/${encodeURIComponent(created.id)}`,
-    )
+    open(created.id)
   } finally {
     creating = false
   }
@@ -96,11 +105,18 @@ async function createFirst() {
     <EmptyState icon="file-text" title={t('space_empty')} description={t('space_empty_desc')}>
       {#snippet actions()}
         {#if canQuire('pageCreate')}
-          <Button disabled={creating} onclick={createFirst}>{t('new_page')}</Button>
+          <Button aria-busy={creating} onclick={() => (pickerOpen = true)}>{t('new_page')}</Button>
         {/if}
       {/snippet}
     </EmptyState>
   </div>
+  <TemplatePicker
+    bind:open={pickerOpen}
+    {workspaceId}
+    spaceId={space.id}
+    onBlank={() => void createFirst()}
+    onMade={(result) => result.pageId && open(result.pageId)}
+  />
 {/if}
 
 <style>

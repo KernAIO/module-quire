@@ -289,6 +289,39 @@ export const quireProcedureAuthz: Record<string, ProcedureAuthz> = {
   'imports.get': { check: 'workspace', permission: 'quire.page.import' },
   'imports.list': { check: 'workspace', permission: 'quire.page.import' },
 
+  /*
+   * A template is a space's furniture, so it follows `labels.*` exactly: reading is
+   * `quire.space.view` and writing is `quire.space.manage`. Changing one changes what everybody in
+   * the space is offered the next time they make a page, which is not a thing somebody who may edit
+   * one page should be able to do to everybody else's.
+   *
+   * Three of the five are `check: 'space'` although four of them take a *template* id, not a space
+   * id. A template id carries no scope of its own, so the row is read first and the question is
+   * asked about the space it belongs to — the same shape as `labels.update` next door. A
+   * workspace-wide template (`space_id is null`) has no narrower scope than the workspace, and the
+   * handlers say so out loud rather than silently falling back to the space of whoever asked.
+   *
+   * `createFromPage` is the one that is `check: 'page'`, and it is the interesting one: it *copies a
+   * page's prose into a template*, so the question that actually protects anything is whether this
+   * person may read that page. A page-scoped DENY of `quire.page.view` has to refuse it, or a
+   * contractor allowed one page of a handbook could lift a page they cannot open into a template and
+   * read it there. `quire.space.manage` is asked as well, in the same handler, and
+   * `templates.int.test.ts` covers that half — this column names one permission, and the one worth
+   * proving with a page-scoped binding is the read.
+   *
+   * `instantiate` asks `quire.page.create` and not `space.manage`: what it does is make a page.
+   * Somebody who may write in a space may use its templates; only somebody who configures the space
+   * may change them. Its `space` branch — which makes a *space* — asks `quire.space.manage` at
+   * workspace scope on top, for the same reason `spaces.create` does; the sweep sends the page
+   * branch, and `templates.int.test.ts` covers the other.
+   */
+  'templates.list': { check: 'space', permission: 'quire.space.view' },
+  'templates.get': { check: 'space', permission: 'quire.space.view' },
+  'templates.createFromPage': { check: 'page', permission: 'quire.page.view' },
+  'templates.update': { check: 'space', permission: 'quire.space.manage' },
+  'templates.remove': { check: 'space', permission: 'quire.space.manage' },
+  'templates.instantiate': { check: 'space', permission: 'quire.page.create' },
+
   'publishing.publish': { check: 'page', permission: 'quire.page.publish' },
   'publishing.revert': { check: 'page', permission: 'quire.page.edit' },
 

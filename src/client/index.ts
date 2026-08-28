@@ -58,6 +58,25 @@ export {
   type RecentView,
   type Space,
   type SpaceVisibility,
+  TEMPLATE_BUILT_IN_VARIABLES,
+  TEMPLATE_STARTER_KEYS,
+  type Template,
+  /**
+   * A picker row: a shipped starter, or a template somebody saved.
+   *
+   * Exported because a screen outside this package will want to draw one — the "New page" picker
+   * lives here, but a dashboard widget offering "start a meeting note" is the obvious next thing,
+   * and it should read the shape from here rather than restate it.
+   */
+  type TemplateChoice,
+  type TemplateKind,
+  type TemplateResult,
+  type TemplateSpaceBody,
+  type TemplateSpaceNode,
+  type TemplateStarterKey,
+  type TemplateSummary,
+  type TemplateVariable,
+  type TemplateVariableType,
   type TransferCounts,
   type TransferState,
   type VersionKind,

@@ -22,6 +22,10 @@ import {
   RichDoc,
   Space,
   SpaceVisibility,
+  Template,
+  TemplateKind,
+  TemplateStarterKey,
+  TemplateVariable,
 } from './models.js'
 import {
   Database,
@@ -286,6 +290,77 @@ export const PublicBasePath = z
  * segment starting with an underscore and no published page can be shadowed by this one.
  */
 export const PUBLIC_ASSET_SEGMENT = '__media'
+
+/**
+ * One row of the picker: a shipped starter, or a template somebody saved.
+ *
+ * The two are one list on purpose. A person choosing what to write does not care which of them came
+ * with Kern, so a screen that draws "Templates" and "Your templates" as separate sections is asking
+ * them to know something about our packaging — and it makes the override rule invisible, because a
+ * starter a workspace has edited would appear in the second list while its shipped twin sat in the
+ * first.
+ *
+ * **`id` is null for a shipped starter, and that is the whole shape of the compromise.** A starter is
+ * a constant in the module rather than a row in the customer's database — `migrations/0011` argues
+ * why at length — so there is no row for it to have an id, and `key` is what addresses it instead.
+ * `instantiate` therefore takes one of the two and refuses both.
+ *
+ * `name` and `description` arrive **already in the reader's language**. A starter's strings are a
+ * table in the module resolved against `principal.locale`, so a client renders whatever it is given
+ * and never has to know which entries are ours.
+ */
+export const TemplateChoice = z.object({
+  /** null for a shipped starter — a constant has no row, so it has no id */
+  id: Id.nullable(),
+  /**
+   * The starter this entry is, or replaces; null for somebody's own template.
+   *
+   * A row carrying a key **stands in for** that starter rather than appearing beside it, so this
+   * list never contains two entries with the same key.
+   */
+  key: z.string().nullable(),
+  builtIn: z.boolean(),
+  kind: TemplateKind,
+  spaceId: Id.nullable(),
+  name: z.string(),
+  description: z.string(),
+  icon: z.string().nullable(),
+  variables: z.array(TemplateVariable),
+  /** null for a shipped starter nobody has edited — it has no row and therefore no history */
+  updatedAt: Timestamp.nullable(),
+})
+export type TemplateChoice = z.infer<typeof TemplateChoice>
+
+/**
+ * What somebody typed into the form a template asked for.
+ *
+ * Strings whatever the variable's type, because substitution is textual: a `date` variable puts
+ * characters into a paragraph exactly as a `text` one does, and the type only ever decided which
+ * control the person was shown. Storing a number here would mean the server deciding how to format
+ * it, in a locale it would have to guess.
+ *
+ * A key naming no declared variable is ignored rather than refused — a client one release ahead is
+ * a normal thing during a rolling deploy, and refusing the whole page over a spare field is not.
+ */
+export const TemplateValues = z.record(z.string().max(40), z.string().max(2000))
+
+/**
+ * What making something from a template produced.
+ *
+ * One shape for both kinds, rather than `Page` for one and `Space` for the other. The caller's next
+ * move is the same either way — open what was just made — and a union output would make every
+ * client branch on `kind` to find out where to navigate. `pageCount` is what the screen reports:
+ * a space template that made eleven pages should say so, because that is a lot of pages to have
+ * appeared in a sidebar without warning.
+ */
+export const TemplateResult = z.object({
+  /** the new space, for a space template; the space the new page landed in otherwise */
+  spaceId: Id,
+  /** what to open: the new page, or the first page of the new space's tree. Null for an empty tree. */
+  pageId: Id.nullable(),
+  pageCount: z.number().int().nonnegative(),
+})
+export type TemplateResult = z.infer<typeof TemplateResult>
 
 export const quireContract = {
   spaces: {
@@ -725,6 +800,159 @@ export const quireContract = {
       .route({ method: 'POST', path: '/recents', ...t('recents') })
       .input(ws.extend({ pageId: Id }))
       .output(Ok),
+  },
+
+  /**
+   * What somebody writes with: a page, or a whole space, saved so it can be made again.
+   *
+   * **The five starters Kern ships are constants in this module, not rows in a customer's
+   * database.** `migrations/0011_templates.sql` argues that at length; the consequences visible from
+   * here are three. `list` answers starters and rows in one list, with a row carrying a starter's
+   * `key` standing *in place of* that starter rather than beside it. A starter has no id, so
+   * `instantiate` takes `templateId` **or** `starterKey` and refuses both. And `get`, `update` and
+   * `remove` take an id, which means they are about rows only — a starter has nothing to fetch or
+   * delete, and "reset this one" is deleting the row that replaced it.
+   *
+   * Reading is `quire.space.view` and writing is `quire.space.manage`, exactly as `labels.*` next
+   * door, and for the same reason: a template is part of a space's furniture rather than one page's
+   * content. Changing it changes what everybody in the space is offered when they make a page, which
+   * is not a thing somebody who may edit one page should be able to do to everybody else's.
+   *
+   * `instantiate` is the exception and asks `quire.page.create`, because what it does is make a
+   * page. Somebody who may write in a space may use its templates; only somebody who configures the
+   * space may change them.
+   */
+  templates: {
+    /**
+     * What may be made here: the starters, plus this workspace's own, with overrides applied.
+     *
+     * `spaceId` is the space being written into, and null asks the workspace-wide question — which
+     * is what the "New space" picker needs, because there is no space yet. With a space named, the
+     * answer is that space's templates *and* the workspace-wide ones: a template scoped to a space
+     * is an addition to what is offered there, never a replacement for what is offered everywhere.
+     *
+     * No body comes back. Thirty page documents to draw thirty names is thirty documents nobody
+     * reads — see `TemplateSummary`. `instantiate` is what reads one.
+     */
+    list: baseContract
+      .route({ method: 'GET', path: '/templates', ...t('templates') })
+      .input(
+        ws.extend({
+          kind: TemplateKind.default('page'),
+          /** the space a page would be made in; null asks only what is offered everywhere */
+          spaceId: Id.nullable().default(null),
+        }),
+      )
+      .output(z.array(TemplateChoice)),
+    /**
+     * One saved template, body and all — what the edit screen loads.
+     *
+     * Rows only. A starter has no row, and inventing an id for it would make every other procedure
+     * here have to tell the two kinds of id apart.
+     */
+    get: baseContract
+      .route({ method: 'GET', path: '/templates/{templateId}', ...t('templates') })
+      .input(ws.extend({ templateId: Id }))
+      .output(Template),
+    /**
+     * Save what is written now as a template.
+     *
+     * `sourceId` names the page for `kind: 'page'` and the **space** for `kind: 'space'`, the same
+     * shape as `exports.start`'s `targetId` and for the same reason: the two kinds have nothing in
+     * common to point at, and two nullable id fields would let a caller send both. The procedure is
+     * named for the common case; a space template reads the space's whole tree.
+     *
+     * `key` is what makes a starter editable at all. Passing one writes a row that **replaces** that
+     * starter in this workspace's picker; deleting the row brings the shipped one back, current and
+     * translated. One row per starter per workspace — the second is a conflict, not a second entry.
+     */
+    createFromPage: baseContract
+      .route({ method: 'POST', path: '/templates', ...t('templates') })
+      .input(
+        ws.extend({
+          kind: TemplateKind.default('page'),
+          /** the page for `page`; the space for `space` — `kind` says which */
+          sourceId: Id,
+          /** null offers it everywhere in the workspace; a space id scopes it to that space */
+          spaceId: Id.nullable().default(null),
+          name: z.string().min(1).max(120),
+          description: z.string().max(2000).default(''),
+          icon: z.string().max(64).nullable().default(null),
+          variables: z.array(TemplateVariable).max(25).default([]),
+          /** replace this shipped starter rather than sitting beside it */
+          key: TemplateStarterKey.nullable().default(null),
+        }),
+      )
+      .output(Template),
+    /**
+     * Rename it, re-scope it, change what it asks for — or replace its body with a page's.
+     *
+     * `sourceId` is three-valued like `publications.update`'s password: a page (or space) id takes
+     * the body from there again, and leaving the key out changes nothing. Without that, updating a
+     * template's name would be a separate act from updating its prose, and the second one would have
+     * no procedure at all.
+     */
+    update: baseContract
+      .route({ method: 'PATCH', path: '/templates/{templateId}', ...t('templates') })
+      .input(
+        ws.extend({
+          templateId: Id,
+          name: z.string().min(1).max(120).optional(),
+          description: z.string().max(2000).optional(),
+          icon: z.string().max(64).nullable().optional(),
+          spaceId: Id.nullable().optional(),
+          variables: z.array(TemplateVariable).max(25).optional(),
+          /** take the body from this page (or space) again; omit to leave the body alone */
+          sourceId: Id.optional(),
+        }),
+      )
+      .output(Template),
+    /**
+     * Delete it. For a row that replaced a starter this is "reset": the shipped one comes back.
+     *
+     * Nothing made from a template is touched — a page is a page once it exists, and a template that
+     * took its pages with it would be a delete nobody could afford to press.
+     */
+    remove: baseContract
+      .route({ method: 'DELETE', path: '/templates/{templateId}', ...t('templates') })
+      .input(ws.extend({ templateId: Id }))
+      .output(Ok),
+    /**
+     * Make the thing: a page, or a whole space and its tree.
+     *
+     * Exactly one of `templateId` and `starterKey` — a starter is a constant with no id, and a
+     * union input would be a shape oRPC has to route. Both, or neither, is a bad request.
+     *
+     * `values` fills what the template declared. `{{date}}`, `{{time}}`, `{{author}}` and
+     * `{{space}}` are filled by the server from the request and are declared by nobody; a name the
+     * template never declared is left in the page as it was written, because deleting text somebody
+     * typed is worse than showing them a placeholder they can see and fix.
+     *
+     * Substitution happens **in text, never in JSON**. A value containing a quote, a brace or a
+     * newline is characters in a paragraph and cannot be anything else — see `services/templates.ts`.
+     */
+    instantiate: baseContract
+      .route({ method: 'POST', path: '/templates/instantiate', ...t('templates') })
+      .input(
+        ws.extend({
+          /** a saved template; null when `starterKey` names a shipped one */
+          templateId: Id.nullable().default(null),
+          /** a shipped starter; null when `templateId` names a saved one */
+          starterKey: TemplateStarterKey.nullable().default(null),
+          /** the space to write into, for a page template. Ignored for a space template. */
+          spaceId: Id.nullable().default(null),
+          /** where the new page hangs, for a page template */
+          parentId: Id.nullable().default(null),
+          afterId: Id.nullable().default(null),
+          /** what the new page is called; empty takes the template's own name */
+          title: z.string().max(300).default(''),
+          /** the new space's key and name, for a space template */
+          key: Space.shape.key.nullable().default(null),
+          name: z.string().max(120).default(''),
+          values: TemplateValues.default({}),
+        }),
+      )
+      .output(TemplateResult),
   },
 
   publishing: {

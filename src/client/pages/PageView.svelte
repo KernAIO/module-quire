@@ -27,6 +27,7 @@ import FavoriteStar from '../components/FavoriteStar.svelte'
 import PageEditor from '../components/PageEditor.svelte'
 import PageLabels from '../components/PageLabels.svelte'
 import PublishDialog from '../components/PublishDialog.svelte'
+import SaveAsTemplateDialog from '../components/SaveAsTemplateDialog.svelte'
 import VersionHistory from '../components/VersionHistory.svelte'
 import { type CoreApi, toPerson } from '../core-api.js'
 import DatabaseView from '../database/DatabaseView.svelte'
@@ -77,6 +78,19 @@ const membersQuery = createQuery(() => ({
   enabled: Boolean(workspaceId),
   queryFn: () => core.workspaces.members.list({ workspaceId, limit: 200 }),
 }))
+
+/*
+ * The space by name, for the one sentence that needs it: "offered only in Handbook".
+ *
+ * The same query key the sidebar already holds, so this is a cache read rather than a request —
+ * and the key is what the URL carries, which is not a thing to show somebody in a sentence.
+ */
+const spacesQuery = createQuery(() => ({
+  queryKey: quireKeys.spaces(workspaceId),
+  enabled: Boolean(workspaceId),
+  queryFn: () => api.spaces.list({ workspaceId, includeArchived: false }),
+}))
+const spaceName = $derived((spacesQuery.data ?? []).find((space) => space.key === spaceKey)?.name ?? spaceKey)
 
 const query = createQuery(() => ({
   queryKey: quireKeys.page(workspaceId, pageId),
@@ -275,6 +289,14 @@ const canPublish = $derived(canQuire('pagePublish'))
  * whole part in the feature is a flag and a menu entry, which is what an entry point should be.
  */
 let exportOpen = $state(false)
+
+/**
+ * Saving this page as something to write with again.
+ *
+ * A flag and a menu entry, exactly like the export above: what a template needs to know is the
+ * dialog's business, and it reads the starters and the space list itself when it opens.
+ */
+let templateOpen = $state(false)
 
 const publicationsQuery = createQuery(() => ({
   queryKey: quireKeys.publications(workspaceId, doc?.spaceId ?? ''),
@@ -621,6 +643,23 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
                 },
               ]
             : []),
+          /*
+           * `space.manage`, not `page.edit`, matching what `templates.createFromPage` asks — and the
+           * asymmetry is the point. A template changes what everybody in the space is offered the
+           * next time they make a page, which is the space's furniture rather than this page's
+           * content, exactly as a label is. Somebody who may write here is not thereby somebody who
+           * may add to everybody else's picker.
+           */
+          ...(canQuire('spaceManage')
+            ? [
+                {
+                  id: 'save-template',
+                  label: t('template_menu'),
+                  icon: 'clipboard-list',
+                  onSelect: () => (templateOpen = true),
+                },
+              ]
+            : []),
           {
             id: 'watch',
             label: watching ? t('watch_stop') : t('watch'),
@@ -792,6 +831,17 @@ async function undoTrash(workspace: string, id: string, spaceId: string, title: 
     spaceId={doc.spaceId}
     page={{ id: doc.id, title: doc.title }}
   />
+
+  {#if canQuire('spaceManage')}
+    <SaveAsTemplateDialog
+      bind:open={templateOpen}
+      {workspaceId}
+      spaceId={doc.spaceId}
+      {spaceName}
+      pageId={doc.id}
+      pageTitle={doc.title}
+    />
+  {/if}
 
   <!--
     The body says nothing about numbers until it knows them. Naming a count before the tree has

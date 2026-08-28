@@ -27,6 +27,7 @@ import LabelManager from './LabelManager.svelte'
 import PageTreeRow from './PageTreeRow.svelte'
 import SidebarFavorites from './SidebarFavorites.svelte'
 import SidebarRecents from './SidebarRecents.svelte'
+import TemplatePicker from './TemplatePicker.svelte'
 
 /**
  * Quire's spaces and pages, in the application sidebar (DESIGN.md §2.3).
@@ -270,7 +271,24 @@ const spaceMenu = $derived.by((): MenuItem[] => {
 
 let creating = $state(false)
 
-async function createPage(parentId: string | null) {
+/**
+ * "New page" opens the picker; the picker's first row makes a blank one.
+ *
+ * The indirection is what keeps a blank page cheap. The picker holds focus on **Blank page**, so
+ * pressing New page and then Enter is the whole gesture — one keystroke more than before, and the
+ * five templates are there for the times somebody wants one.
+ */
+let pickerOpen = $state(false)
+let pickerParent = $state<string | null>(null)
+
+function createPage(parentId: string | null) {
+  if (!activeSpace) return
+  pickerParent = parentId
+  pickerOpen = true
+}
+
+/** What the picker's blank row does, and what "New page" used to do on its own. */
+async function createBlankPage(parentId: string | null) {
   if (!activeSpace || creating) return
   creating = true
   try {
@@ -289,6 +307,12 @@ async function createPage(parentId: string | null) {
   } finally {
     creating = false
   }
+}
+
+/** A page made from a template lands in the tree exactly where a blank one would have. */
+function madeFromTemplate(pageId: string | null) {
+  if (pickerParent) expanded = new Set(expanded).add(pickerParent)
+  if (pageId) openPage(pageId)
 }
 </script>
 
@@ -507,6 +531,14 @@ async function createPage(parentId: string | null) {
 {#if activeSpace}
   <ExportDialog bind:open={exportOpen} {workspaceId} spaceId={activeSpace.id} />
   <ImportDialog bind:open={importOpen} {workspaceId} space={activeSpace} />
+  <TemplatePicker
+    bind:open={pickerOpen}
+    {workspaceId}
+    spaceId={activeSpace.id}
+    parentId={pickerParent}
+    onBlank={() => void createBlankPage(pickerParent)}
+    onMade={(result) => madeFromTemplate(result.pageId)}
+  />
 {/if}
 
 <style>

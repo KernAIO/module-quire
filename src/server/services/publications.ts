@@ -34,9 +34,11 @@ import { KernError, type Kernel, type Tx } from '@kernhq/kernel'
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Publication } from '../../contract/index.js'
 import { PUBLIC_ASSET_SEGMENT } from '../../contract/index.js'
-import { escapeHtml } from '../render.js'
+import { pageDocFromState } from '../document.js'
+import { escapeHtml, hasReadingMacro } from '../render.js'
 import { pages, pageVersions, publications } from '../schema.js'
 import type { QuireAccess } from './access.js'
+import type { QuireMacros } from './macros.js'
 
 /** A workspace segment is either its uuid or its slug; anything else is not an address. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -384,7 +386,16 @@ export function snippetAround(text: string, query: string): string {
 /** `%`, `_` and `\` mean something to `ILIKE`, so a reader searching for `50%` gets `50%`. */
 const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`)
 
-export function quirePublications(kernel: Kernel, access: QuireAccess, versions: QuireVersions) {
+export function quirePublications(
+  kernel: Kernel,
+  access: QuireAccess,
+  versions: QuireVersions,
+  /*
+   * Only ever asked to resolve for a `publication` audience — there is no principal on this path and
+   * nothing here can construct one. See the note in `html`.
+   */
+  macroServices: QuireMacros,
+) {
   /**
    * The associated data an unlock token is sealed with.
    *
@@ -738,7 +749,7 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
       basePath: string,
     ): Promise<string> {
       const [row] = await tx
-        .select({ html: pageVersions.html })
+        .select({ html: pageVersions.html, state: pageVersions.state })
         .from(pageVersions)
         .where(and(eq(pageVersions.workspaceId, workspaceId), eq(pageVersions.id, node.version_id)))
         .limit(1)
@@ -753,7 +764,48 @@ export function quirePublications(kernel: Kernel, access: QuireAccess, versions:
       if (!row || row.html === null)
         throw new KernError('NOT_FOUND', 'There is no published page at this address')
       const pathById = new Map(nodes.map((n) => [n.id, n.path]))
-      return publicHtml(row.html, basePath, {
+
+      /*
+       * A macro that reads other pages is resolved **here, per read** — never at publish time.
+       *
+       * The stored HTML draws those five as empty frames on purpose. Resolving them into
+       * `page_versions.html` would freeze a list of titles into a row that is then served for ever:
+       * unpublish a page, exclude it from the site, move it out of the publication, and the stored
+       * copy of its parent keeps naming it. `publicHtml` below would strip the dead *link* and leave
+       * the *title*, which is the leak stated at the top of `macros.ts` — a private page's title on
+       * a public site.
+       *
+       * So the version is re-rendered against this publication's own reachable set, which is exactly
+       * `nodes`: the walk has already applied every rule about what public means, and this file does
+       * not get a second opinion about it. Only for a page that has such a macro — `hasReadingMacro`
+       * is a string search over HTML we already have, so an ordinary page still costs one row read.
+       */
+      let html = row.html
+      if (hasReadingMacro(html)) {
+        const macros = await macroServices.resolve(
+          tx,
+          workspaceId,
+          pageDocFromState(row.state),
+          { kind: 'publication', pageIds: new Set(nodes.map((n) => n.id)) },
+          {
+            pageId: node.id,
+            /*
+             * An in-app address, deliberately, even though this render is for the internet.
+             *
+             * `publicHtml` below turns every `/quire/<space>/<id>` into this site's own path, or
+             * drops the href when the id is not public — one pass, over every internal link on the
+             * page. Handing a macro the *public* path here instead would produce the one href that
+             * pass does not recognise, so it would go out without `basePath` in front of it. The
+             * space segment is not read by that pattern and there is nothing here to fill it with,
+             * so it is a placeholder; the id is what carries the meaning.
+             */
+            pageHref: (id) => (pathById.has(id) ? `/quire/-/${id}` : null),
+          },
+        )
+        html = await versions.html(tx, workspaceId, row.state, { pictures: 'referenced', macros })
+      }
+
+      return publicHtml(html, basePath, {
         pagePath: (id) => pathById.get(id) ?? null,
         // Minted per read rather than stored, so the envelope can be re-keyed and so nothing
         // durable in the database is a capability. `basePath` already ends in a slash.

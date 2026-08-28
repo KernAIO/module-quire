@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { quireContract, quirePermissions, quireProcedureAuthz } from '../contract/index.js'
 import { implement_ } from './_impl.js'
 import { quireModule } from './index.js'
+import { templates } from './schema.js'
 import { type QuireServices, quireServices } from './services/index.js'
 
 const BASE_URL = process.env.DATABASE_URL ?? 'postgres://kern:kern@localhost:5432/kern'
@@ -163,6 +164,8 @@ const fixture = {
   // One each, for the same reason there are three comments: a procedure that wrongly succeeds must
   // not be able to make the next one fail with NOT_FOUND, which is not the refusal being asserted.
   labelToRemove: '',
+  templateId: '',
+  templateToRemove: '',
   exportJobId: '',
   importJobId: '',
   importFileId: randomUUID(),
@@ -289,6 +292,40 @@ beforeAll(async () => {
     run((tx) => svc.organisation.createLabel(tx, WS, space.id, { name, colour: 'accent' }))
   fixture.labelId = (await label('Draft')).id
   fixture.labelToRemove = (await label('Archive')).id
+
+  /*
+   * Two templates, **scoped to the space** — a workspace-wide one has no narrower scope than the
+   * workspace, so the space-scoped DENY this file writes could not reach it and the sweep would pass
+   * for want of anything to refuse.
+   *
+   * Inserted directly rather than through `templates.createFromPage`, which reads the page's real
+   * document out of the collab service: the stub above keeps strings rather than Yjs bytes, so that
+   * path would refuse for the wrong reason. What is being asserted here is the permission check, and
+   * that happens before any body is read.
+   */
+  const template = (name: string) =>
+    run(async (tx) => {
+      const [created] = await tx
+        .insert(templates)
+        .values({
+          id: randomUUID(),
+          workspaceId: WS,
+          spaceId: space.id,
+          kind: 'page',
+          key: null,
+          builtIn: false,
+          name,
+          description: '',
+          icon: null,
+          doc: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'x' }] }] },
+          variables: [],
+          createdBy: OWNER,
+        })
+        .returning({ id: templates.id })
+      return created!.id
+    })
+  fixture.templateId = await template('Weekly review')
+  fixture.templateToRemove = await template('To delete')
 
   /*
    * An export the sweep can name. Recorded through the service rather than the router, because the
@@ -455,6 +492,28 @@ const inputFor = (): Record<string, Record<string, unknown>> => {
     'imports.start': { ...space, source: 'markdown', fileId: fixture.importFileId },
     'imports.get': { ...ws, jobId: fixture.importJobId },
     'imports.list': ws,
+
+    /*
+     * `createFromPage` is the only one here declared `check: 'page'`, because the question that
+     * protects anything is whether this person may read the page being copied. The other five take a
+     * template id or a space id and resolve to the space.
+     *
+     * `instantiate` sends the **page** branch and a shipped starter. Its space branch makes a space
+     * and asks `quire.space.manage` at workspace scope on top; `templates.int.test.ts` covers that,
+     * because the sweep sends one input per procedure and a branch it does not send is a branch it
+     * cannot see — the same shape as `exports.start` above.
+     */
+    'templates.list': { ...space, kind: 'page' },
+    'templates.get': { ...ws, templateId: fixture.templateId },
+    'templates.createFromPage': {
+      ...space,
+      kind: 'page',
+      sourceId: fixture.pageId,
+      name: 'Smuggled template',
+    },
+    'templates.update': { ...ws, templateId: fixture.templateId, name: 'Renamed template' },
+    'templates.remove': { ...ws, templateId: fixture.templateToRemove },
+    'templates.instantiate': { ...space, starterKey: 'meeting-notes', title: 'From a starter' },
 
     'publishing.publish': { ...page, label: 'live' },
     'publishing.revert': page,

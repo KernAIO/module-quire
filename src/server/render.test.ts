@@ -1,6 +1,25 @@
-import { PAGE_DOC_MARKS, PAGE_DOC_NODES, type PageDoc } from '@kernhq/ui/editor/page-doc'
+import {
+  PAGE_DOC_MARKS,
+  PAGE_DOC_NODES,
+  PAGE_DOC_READING_MACROS,
+  PAGE_STATUS_TONES,
+  type PageDoc,
+} from '@kernhq/ui/editor/page-doc'
 import { describe, expect, it } from 'vitest'
-import { MARK_RENDERERS, NODE_RENDERERS, renderPageDoc, safeHref, textFromPageDoc } from './render.js'
+import {
+  hasReadingMacro,
+  MARK_RENDERERS,
+  type MacroContent,
+  macroKey,
+  macrosIn,
+  NODE_RENDERERS,
+  READING_MACRO_KINDS,
+  READING_MACROS,
+  renderPageDoc,
+  STATUS_TONES,
+  safeHref,
+  textFromPageDoc,
+} from './render.js'
 
 /** A one-block document, so a case can be stated without four lines of scaffolding. */
 const doc = (
@@ -28,6 +47,52 @@ describe('the renderer covers the schema', () => {
 
   it('has a case for every mark in PAGE_DOC_MARKS', () => {
     expect(new Set(Object.keys(MARK_RENDERERS))).toEqual(new Set(PAGE_DOC_MARKS))
+  })
+
+  /**
+   * The macro half of the same claim, and the one that decides whether a page leaks.
+   *
+   * `PAGE_DOC_READING_MACROS` is the writer's list of nodes that draw something the document does
+   * not contain. This file's `READING_MACROS` is the reader's, and it is what `macroFrame` — the
+   * one place the fail-closed rule lives — is applied to. A sixth reading macro added in
+   * @kernhq/ui and rendered here as an ordinary node would draw whatever it was handed, for
+   * whoever asked, with nobody having decided they may see it.
+   */
+  it('treats exactly the nodes @kernhq/ui calls reading macros as reading macros', () => {
+    expect(new Set(READING_MACROS)).toEqual(new Set(PAGE_DOC_READING_MACROS))
+  })
+
+  /** The lozenge's colours are restated in the renderer rather than imported; they must agree. */
+  it('knows the same status tones the extension can produce', () => {
+    expect([...STATUS_TONES].sort()).toEqual([...PAGE_STATUS_TONES].sort())
+  })
+
+  /**
+   * Every reading macro has a marker, and `hasReadingMacro` finds it.
+   *
+   * This is the check that keeps the *public* path honest. Stored publish-time HTML draws reading
+   * macros as empty frames and the public read re-resolves them, but only for a page
+   * `hasReadingMacro` says has one. A macro whose `data-macro` value was missing from the map would
+   * be skipped by that check for ever — the page would keep serving the empty frame, which is safe,
+   * and would silently never show the macro, which nobody would notice until a customer asked.
+   */
+  it('can recognise every reading macro in its own output', () => {
+    expect(Object.keys(READING_MACRO_KINDS).sort()).toEqual([...READING_MACROS].sort())
+    for (const type of READING_MACROS) {
+      const html = renderPageDoc(doc({ type, attrs: { pageId: null, limit: 5, depth: 1 } }))
+      expect(hasReadingMacro(html), `${type} draws no marker hasReadingMacro can find`).toBe(true)
+    }
+  })
+
+  /** And says no to a page that has none, or the public path re-renders every page for nothing. */
+  it('does not mistake the three self-contained macros for reading ones', () => {
+    for (const node of [
+      { type: 'statusLozenge', attrs: { tone: 'warning' }, content: [{ type: 'text', text: 'Blocked' }] },
+      { type: 'excerpt', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'hi' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'ordinary prose' }] },
+    ]) {
+      expect(hasReadingMacro(renderPageDoc(doc(node)))).toBe(false)
+    }
   })
 })
 
@@ -191,6 +256,191 @@ describe('renderPageDoc', () => {
     expect(renderPageDoc(doc(image))).toBe('')
     expect(renderPageDoc(doc(image), { fileSrc: () => 'https://cdn.example/f1.png' })).toBe(
       '<img src="https://cdn.example/f1.png" alt="A chart" loading="lazy">',
+    )
+  })
+})
+
+/**
+ * The macros, from the renderer's side.
+ *
+ * The permission rule itself is proved in `macros.int.test.ts`, against a real database and a real
+ * DENY binding — this file cannot, because it has neither. What it proves is the property that rule
+ * *rests* on: with nothing handed to it, this file draws no title, no link and no prose, whatever
+ * the document asks for. Every existing caller — the exporters, the publish-time render, a search
+ * preview — is in exactly that state, so this is what they all do today.
+ */
+describe('the macros that read other pages', () => {
+  const readingDoc = (type: string) =>
+    doc({ type, attrs: { pageId: '01920000-0000-7000-8000-00000000000a', limit: 5, depth: 2 } })
+
+  it.each([...READING_MACROS])('draws %s as an empty frame when nothing was resolved', (type) => {
+    const html = renderPageDoc(readingDoc(type))
+    expect(html).toContain('class="kern-macro"')
+    expect(html).toContain('Nothing to show')
+    expect(html).not.toContain('<a ')
+    expect(html).not.toContain('<ul')
+  })
+
+  it('says so in the reader’s own language when the caller supplies the words', () => {
+    const html = renderPageDoc(readingDoc('pageChildren'), {
+      macroStrings: { empty: 'Nichts anzuzeigen', untitled: 'Ohne Titel' },
+    })
+    expect(html).toContain('Nichts anzuzeigen')
+    expect(html).not.toContain('Nothing to show')
+  })
+
+  const ref = (over: Record<string, unknown> = {}) => ({
+    id: 'p1',
+    title: 'Rollback runbook',
+    icon: null,
+    href: '/quire/ENG/p1',
+    updated: null,
+    excerpt: null,
+    ...over,
+  })
+
+  it('draws a children list as nested lists, linked where there is an address', () => {
+    const content: MacroContent = {
+      kind: 'pages',
+      pages: [{ ...ref(), children: [ref({ id: 'p2', title: 'Step two', href: null })] }],
+    }
+    const html = renderPageDoc(readingDoc('pageChildren'), { macros: () => content })
+    expect(html).toContain('<a href="/quire/ENG/p1">Rollback runbook</a>')
+    // No address for the child, so its title is text — never an anchor that goes nowhere.
+    expect(html).toContain('<span>Step two</span>')
+    expect(html).toContain('<ul class="kern-macro-pages"><li>')
+  })
+
+  it('escapes a title, an excerpt and a name rather than trusting any of them', () => {
+    const html = renderPageDoc(readingDoc('pageChildren'), {
+      macros: () => ({
+        kind: 'pages',
+        pages: [ref({ title: '<script>x</script>', excerpt: '" onload="y', href: 'javascript:evil()' })],
+      }),
+    })
+    expect(html).toContain('&lt;script&gt;')
+    // The words survive as inert text; what must not survive is a quote able to close an attribute.
+    expect(html).toContain('&quot; onload=&quot;y')
+    expect(html).not.toContain('" onload="')
+    // A rejected href leaves the title as plain text, exactly as a rejected link mark does.
+    expect(html).not.toContain('<a ')
+  })
+
+  /**
+   * An icon is drawn only when the icon *is* the character.
+   *
+   * A page stores an emoji or a Lucide icon name, and this renderer has no icon set — printing
+   * `book` in front of a title because somebody picked the book icon is worse than printing nothing.
+   */
+  it('draws an emoji icon and drops an icon name it cannot draw', () => {
+    const emoji = renderPageDoc(readingDoc('pageChildren'), {
+      macros: () => ({ kind: 'pages', pages: [ref({ icon: '📕' })] }),
+    })
+    expect(emoji).toContain('📕')
+    const named = renderPageDoc(readingDoc('pageChildren'), {
+      macros: () => ({ kind: 'pages', pages: [ref({ icon: 'sticky-note', title: 'Notes' })] }),
+    })
+    expect(named).not.toContain('sticky-note')
+    expect(named).not.toContain('kern-macro-icon')
+  })
+
+  it('draws an included page under a link to where it came from, and honours showTitle', () => {
+    const content: MacroContent = { kind: 'page', page: ref(), html: '<p>the steps</p>' }
+    const shown = renderPageDoc(doc({ type: 'includePage', attrs: { pageId: 'p1' } }), {
+      macros: () => content,
+    })
+    expect(shown).toContain('<span class="kern-macro-source"><a href="/quire/ENG/p1">')
+    expect(shown).toContain('<p>the steps</p>')
+    const bare = renderPageDoc(doc({ type: 'includePage', attrs: { pageId: 'p1', showTitle: false } }), {
+      macros: () => content,
+    })
+    expect(bare).not.toContain('kern-macro-source')
+    expect(bare).toContain('<p>the steps</p>')
+  })
+
+  /** A resolver that answers with the wrong shape is the same as one that answered nothing. */
+  it('ignores an answer of the wrong kind rather than drawing something misleading', () => {
+    const html = renderPageDoc(doc({ type: 'includePage', attrs: { pageId: 'p1' } }), {
+      macros: () => ({ kind: 'pages', pages: [ref()] }),
+    })
+    expect(html).toContain('Nothing to show')
+    expect(html).not.toContain('Rollback runbook')
+  })
+
+  it('lists contributors by name and never by id', () => {
+    const html = renderPageDoc(doc({ type: 'contributors', attrs: { limit: 5 } }), {
+      macros: () => ({ kind: 'people', people: [{ name: 'Ada Lovelace' }] }),
+    })
+    expect(html).toContain('<li>Ada Lovelace</li>')
+    expect(html).not.toMatch(/data-id/)
+  })
+})
+
+describe('the macros that resolve from the document', () => {
+  it('draws an excerpt as its own prose, and marks a hidden one rather than dropping it', () => {
+    const open = renderPageDoc(doc({ type: 'excerpt', content: [para('quotable')] }))
+    expect(open).toBe('<div class="kern-excerpt" data-macro="excerpt"><p>quotable</p></div>')
+    const hidden = renderPageDoc(doc({ type: 'excerpt', attrs: { hidden: true }, content: [para('q')] }))
+    expect(hidden).toContain('data-hidden="true"')
+    // The prose is still in the HTML: a print stylesheet may reasonably decide to show it.
+    expect(hidden).toContain('<p>q</p>')
+  })
+
+  it('draws an expand, open when the writer stored that decision', () => {
+    const body = [
+      { type: 'detailsSummary', content: [{ type: 'text', text: 'Rollback' }] },
+      { type: 'detailsContent', content: [para('the steps')] },
+    ]
+    expect(renderPageDoc(doc({ type: 'expand', content: body }))).toBe(
+      '<details class="kern-expand" data-macro="expand"><summary>Rollback</summary>' +
+        '<div><p>the steps</p></div></details>',
+    )
+    expect(renderPageDoc(doc({ type: 'expand', attrs: { open: true }, content: body }))).toContain(
+      '<details class="kern-expand" data-macro="expand" open>',
+    )
+  })
+
+  it('draws a lozenge with its tone, and falls back for one it does not know', () => {
+    const lozenge = (tone: unknown) => ({
+      type: 'paragraph',
+      content: [{ type: 'statusLozenge', attrs: { tone }, content: [{ type: 'text', text: 'Blocked' }] }],
+    })
+    expect(renderPageDoc(doc(lozenge('warning')))).toBe(
+      '<p><span class="kern-status" data-status="warning">Blocked</span></p>',
+    )
+    expect(renderPageDoc(doc(lozenge('evil" onload="x')))).toContain('data-status="neutral"')
+  })
+})
+
+describe('macrosIn and macroKey', () => {
+  it('collects only the macros that need an audience', () => {
+    const found = macrosIn({
+      type: 'doc',
+      content: [
+        { type: 'pageChildren', attrs: { pageId: null, depth: 1 } },
+        { type: 'excerpt', content: [para('not a question')] },
+        { type: 'paragraph', content: [{ type: 'statusLozenge', attrs: { tone: 'info' } }] },
+        { type: 'callout', content: [{ type: 'includePage', attrs: { pageId: 'p1' } }] },
+      ],
+    })
+    expect(found.map((n) => n.type)).toEqual(['pageChildren', 'includePage'])
+  })
+
+  /** Two identical macros are one question, so the resolver asks the database once. */
+  it('de-duplicates two macros that ask the same thing', () => {
+    const node = { type: 'pageChildren', attrs: { pageId: 'p1', depth: 2 } }
+    expect(macrosIn({ type: 'doc', content: [node, { ...node }] })).toHaveLength(1)
+  })
+
+  it('keys on the attributes rather than the block id, and ignores their order', () => {
+    expect(macroKey({ type: 'pageChildren', attrs: { id: 'block-1', pageId: 'p1' } })).toBe(
+      macroKey({ type: 'pageChildren', attrs: { id: 'block-2', pageId: 'p1' } }),
+    )
+    expect(macroKey({ type: 'pageChildren', attrs: { depth: 2, pageId: 'p1' } })).toBe(
+      macroKey({ type: 'pageChildren', attrs: { pageId: 'p1', depth: 2 } }),
+    )
+    expect(macroKey({ type: 'pageChildren', attrs: { pageId: 'p1' } })).not.toBe(
+      macroKey({ type: 'pageChildren', attrs: { pageId: 'p2' } }),
     )
   })
 })

@@ -3,7 +3,13 @@ import { KernError, type Kernel, type Tx, uuidv7 } from '@kernhq/kernel'
 import { and, desc, eq, inArray, lt } from 'drizzle-orm'
 import type { PageVersion } from '../../contract/index.js'
 import { pageDocFromBase64, pageDocFromState } from '../document.js'
-import { referencesIn, renderPageDoc, textFromPageDoc } from '../render.js'
+import {
+  type MacroResolver,
+  type MacroStrings,
+  referencesIn,
+  renderPageDoc,
+  textFromPageDoc,
+} from '../render.js'
 import { pages, pageVersions, spaces } from '../schema.js'
 import type { QuireAccess } from './access.js'
 import { documentNameOf } from './pages.js'
@@ -262,7 +268,20 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
       tx: Tx,
       workspaceId: string,
       state: Buffer | Uint8Array | null,
-      opts: { pictures?: 'signed' | 'referenced' } = {},
+      opts: {
+        pictures?: 'signed' | 'referenced'
+        /**
+         * What the macros that read other pages were told, for whoever this render is for.
+         *
+         * Absent — which is what the publish-time render passes — draws every reading macro as an
+         * empty frame. That is not an oversight to fix later: this output is **stored** in
+         * `page_versions.html`, and a resolved macro in a stored row is a set of page titles frozen
+         * at publish time and served for ever, including after those pages are unpublished. The
+         * public read re-resolves them per read instead. See `publications.html`.
+         */
+        macros?: MacroResolver
+        macroStrings?: MacroStrings
+      } = {},
     ): Promise<string> {
       const doc = pageDocFromState(state)
       if (!doc) return ''
@@ -308,6 +327,8 @@ export function quireVersions(kernel: Kernel, access: QuireAccess) {
       return renderPageDoc(doc, {
         fileSrc: (id) => sources.get(id) ?? null,
         pageHref: (id) => hrefs.get(id) ?? null,
+        macros: opts.macros,
+        macroStrings: opts.macroStrings,
       })
     },
   }

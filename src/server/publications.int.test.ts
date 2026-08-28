@@ -25,12 +25,14 @@ import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { ANONYMOUS, type Principal } from '@kernhq/contracts'
 import { createKernel, KernError, type Kernel, type RequestContext, type Tx } from '@kernhq/kernel'
+import type { PageDoc } from '@kernhq/ui/editor/page-doc'
 import { call } from '@orpc/server'
 import { and, eq, sql } from 'drizzle-orm'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { PublicPage, PublicSite, Space } from '../contract/index.js'
 import { implement_ } from './_impl.js'
+import { pageDocToYState } from './import/ydoc.js'
 import { quireModule } from './index.js'
 import { pages, pageVersions } from './schema.js'
 import { type QuireServices, quireServices } from './services/index.js'
@@ -101,9 +103,14 @@ const refusalFor = (name: string, input: Record<string, unknown>) =>
     (err) => codeOf(err),
   )
 
-const documents = new Map<string, string>()
+/**
+ * A page's live document. A string for the pages whose prose nothing reads, real Yjs bytes for the
+ * one carrying a macro — `pageDocFromState` returns null for anything else, and a macro on a page
+ * with an unreadable body resolves to nothing for reasons that have nothing to do with publication.
+ */
+const documents = new Map<string, string | Buffer>()
 function registerStubs(k: Kernel) {
-  const b64 = (v: string) => Buffer.from(v).toString('base64')
+  const b64 = (v: string | Buffer) => (Buffer.isBuffer(v) ? v : Buffer.from(v)).toString('base64')
   k.broker.register('collab', {
     'document.state': {
       handler: async (input: { name: string }) => ({
@@ -116,7 +123,7 @@ function registerStubs(k: Kernel) {
     'document.snapshot': {
       handler: async (input: { name: string }) => {
         if (!documents.has(input.name)) throw new Error('no document')
-        return { snapshot: b64(`snap:${documents.get(input.name)}`), state: b64(documents.get(input.name)!) }
+        return { snapshot: b64(documents.get(input.name)!), state: b64(documents.get(input.name)!) }
       },
     },
     'document.apply': { handler: async () => ({ ok: true as const, size: 0 }) },
@@ -215,6 +222,8 @@ const fx = {
   otherWorkspacePage: '',
   /** the page whose HTML carries the mentions the scrub has to deal with */
   mentions: '',
+  /** the page carrying a children macro, which is the only page here that lists other pages */
+  contents: '',
   /** the page whose HTML carries a picture reference and a signed URL left over from 0.12.0 */
   pictured: '',
   /** the root of a publication that was gutted after the fact: the row survives, the site does not */
@@ -266,9 +275,14 @@ const page = (over: Record<string, unknown> & { spaceId: string }) =>
     { userId: ALICE },
   )
 
-/** Publish a page for real: capture a version, pin it, render it. */
-async function publish(pageId: string, workspaceId = WS_A): Promise<string> {
-  documents.set(`ws:${workspaceId}:quire:page:${pageId}`, `prose of ${pageId}`)
+/**
+ * Publish a page for real: capture a version, pin it, render it.
+ *
+ * `doc` gives the page a real body rather than a stand-in string, which only the macro page needs —
+ * and needs absolutely, because the publish-time render stores what `renderPageDoc` makes of it.
+ */
+async function publish(pageId: string, workspaceId = WS_A, doc?: PageDoc): Promise<string> {
+  documents.set(`ws:${workspaceId}:quire:page:${pageId}`, doc ? pageDocToYState(doc) : `prose of ${pageId}`)
   return kernel.database.withWorkspace(
     workspaceId,
     async (tx) => {
@@ -364,6 +378,7 @@ beforeAll(async () => {
   fx.child = (await page({ spaceId: space.id, parentId: fx.root, title: 'Getting started' })).id
   fx.grandchild = (await page({ spaceId: space.id, parentId: fx.child, title: 'Installing' })).id
   fx.mentions = (await page({ spaceId: space.id, parentId: fx.root, title: 'Links' })).id
+  fx.contents = (await page({ spaceId: space.id, parentId: fx.root, title: 'Contents' })).id
   fx.pictured = (await page({ spaceId: space.id, parentId: fx.root, title: 'Office' })).id
   fx.guttedRoot = (await page({ spaceId: space.id, title: 'Gutted' })).id
   fx.excluded = (await page({ spaceId: space.id, parentId: fx.root, title: 'Salaries' })).id
@@ -381,6 +396,20 @@ beforeAll(async () => {
   await publish(fx.grandchild)
   const mentionsVersion = await publish(fx.mentions)
   const picturedVersion = await publish(fx.pictured)
+  /*
+   * The macro page, published with a real body and left with the HTML the publish produced.
+   *
+   * Every other page here has its stored HTML overwritten by `setVersion`; this one must not be,
+   * because what the publish-time render *wrote* is half of what the macro tests assert — an empty
+   * frame, resolved against nobody, which is the state a stored public page has to be in.
+   */
+  await publish(fx.contents, WS_A, {
+    type: 'doc',
+    content: [
+      { type: 'paragraph', content: [{ type: 'text', text: 'Everything in this handbook:' }] },
+      { type: 'pageChildren', attrs: { pageId: fx.root, depth: 1, sort: 'title' } },
+    ],
+  })
   const guttedVersion = await publish(fx.guttedRoot)
   await setVersion(guttedVersion, { html: '<p>Nothing left.</p>', text: 'nothing left' })
 
@@ -496,7 +525,7 @@ describe('what a published site is', () => {
     const answer = await site()
     expect(answer.locked).toBe(false)
     expect(answer.site?.nav.map((n) => n.path).sort()).toEqual(
-      ['', 'getting-started', 'getting-started/installing', 'links', 'office'].sort(),
+      ['', 'contents', 'getting-started', 'getting-started/installing', 'links', 'office'].sort(),
     )
   })
 
@@ -530,6 +559,79 @@ describe('what a published site is', () => {
     const answer = await publicPage('')
     expect(answer.etag.length).toBeGreaterThan(8)
     expect(answer.etag).not.toContain(fx.rootVersionId)
+  })
+})
+
+/**
+ * A macro that lists other pages, on a page with no reader at all.
+ *
+ * This is the worst thing this slice could ship, so it is asserted from the outside like everything
+ * else in this file: a children macro on a published page draws the pages under the handbook, and
+ * `Salaries` is one of them. It is published, it is in the subtree, and it is marked never public —
+ * so it appears in the macro's *source* and must not appear in its output. A resolver that filtered
+ * nothing would put the word "Salaries" on the open internet, under a heading inviting people to
+ * read it, and nothing else in this file would notice: the page is 404 by its own address, and the
+ * navigation and the search already refuse it.
+ *
+ * The two halves are asserted separately because they fail separately. The **stored** HTML must
+ * hold an empty frame — resolving at publish time would freeze today's titles into a row that is
+ * served for ever, including after those pages stop being public — and the **served** HTML must
+ * hold the answer, resolved against this publication as it is at the moment of reading.
+ */
+describe('a macro on a published page', () => {
+  const storedHtml = () =>
+    run(async (tx) => {
+      const [row] = await tx
+        .select({ html: pageVersions.html })
+        .from(pageVersions)
+        .where(and(eq(pageVersions.workspaceId, WS_A), eq(pageVersions.pageId, fx.contents)))
+        .limit(1)
+      return row?.html ?? ''
+    })
+
+  it('stores an empty frame at publish time rather than a list of titles', async () => {
+    const html = await storedHtml()
+    expect(html, 'the publish-time render did not draw the macro at all').toContain('data-macro="children"')
+    for (const title of ['Getting started', 'Salaries', 'Old policy', 'Draft section'])
+      expect(html, `${title} was resolved into stored HTML`).not.toContain(title)
+  })
+
+  it('names the pages the publication reaches, when a stranger reads it', async () => {
+    const answer = await publicPage('contents')
+    expect(answer.html).toContain('Getting started')
+    expect(answer.html).toContain('Links')
+    expect(answer.html).toContain('Office')
+  })
+
+  /** The assertion the whole slice is judged by. */
+  it('names no page the publication does not reach', async () => {
+    const answer = await publicPage('contents')
+    for (const [title, why] of [
+      ['Salaries', 'a page marked never public'],
+      ['Band 5', 'a page under one marked never public'],
+      ['Old policy', 'an archived page'],
+      ['Redundancy plan', 'a trashed page'],
+      ['Draft section', 'a page that was never published'],
+      ['Beside the handbook', 'a page outside the publication'],
+      ['Internal only', 'a page in another space'],
+    ] as Array<[string, string]>)
+      expect(answer.html, `a macro named ${why} on a public site`).not.toContain(title)
+  })
+
+  /**
+   * A macro's links go through the same rewrite every other internal link does.
+   *
+   * The resolver hands the renderer an in-app `/quire/-/<id>` address on purpose, because the public
+   * scrub matches that shape and nothing else — a public path handed in early would be the one href
+   * it does not recognise, and it would go out with a raw uuid in it. The sweep below covers this
+   * too; it is stated here as well because that sweep would report it as "a public response carried
+   * a uuid" rather than as the macro's own bug.
+   */
+  it('links a page it names by its public path, never by its id', async () => {
+    const answer = await publicPage('contents')
+    expect(answer.html).toContain('getting-started')
+    expect(answer.html).not.toContain(fx.child)
+    expect(answer.html).not.toContain('/quire/-/')
   })
 })
 
@@ -980,6 +1082,8 @@ describe('the whole public surface, swept for identifiers', () => {
       publicPage('getting-started'),
       publicPage('getting-started/installing'),
       publicPage('links'),
+      // The macro page: the only response here whose body is built from *other* pages' rows.
+      publicPage('contents'),
       ask('public.search', { workspaceId: WS_A, slug: SLUG, q: 'handbook' }),
       ask('public.sitemap', { workspaceId: WS_A, slug: SLUG }),
       ask('public.robots', { workspaceId: WS_A, slug: SLUG }),
@@ -1022,6 +1126,7 @@ describe('the whole public surface, swept for identifiers', () => {
       publicPage('getting-started/installing'),
       publicPage('office'),
       publicPage('links'),
+      publicPage('contents'),
       publicPage(''),
     ])
     for (const response of composed) {

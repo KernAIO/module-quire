@@ -473,4 +473,195 @@ export const ImportJob = z.object({
 })
 export type ImportJob = z.infer<typeof ImportJob>
 
+// =====================================================================================
+// Templates
+// =====================================================================================
+
+/**
+ * What a template makes.
+ *
+ * `page` — one page; the body is a page doc.
+ * `space` — a whole space; the body is a tree of pages, each with its own body.
+ *
+ * Two rather than one with a "just make the root" flag, because they are made from different places
+ * and answer different questions: a page template is offered on "New page" inside a space that
+ * already exists, and a space template is what somebody reaches for when there is no space yet.
+ */
+export const TemplateKind = z.enum(['page', 'space'])
+export type TemplateKind = z.infer<typeof TemplateKind>
+
+/**
+ * The starters this module ships.
+ *
+ * **They are constants in the module, not rows in a customer's database**, and the key is what a
+ * constant has instead of an id. `migrations/0011_templates.sql` argues the choice at length; the
+ * short of it is that a migration runs once per *database* and has no workspace to seed into, that a
+ * seeded row is frozen at the release that wrote it, and that a row holds one language in a product
+ * that ships five.
+ *
+ * A workspace edits a starter by **overriding** it: a `Template` row carrying one of these keys takes
+ * that starter's place in the picker rather than sitting beside it, so the first edit writes one row,
+ * a workspace that never touches them has none, and resetting is deleting the row.
+ *
+ * `Template.key` is deliberately **not** this enum — see the comment there.
+ */
+export const TemplateStarterKey = z.enum([
+  'meeting-notes',
+  'decision-record',
+  'requirements',
+  'retrospective',
+  'how-to',
+])
+export type TemplateStarterKey = z.infer<typeof TemplateStarterKey>
+export const TEMPLATE_STARTER_KEYS = TemplateStarterKey.options
+
+/**
+ * What a variable's type decides, which is **the control somebody is shown and not the storage**.
+ *
+ * Every filled value is substituted into prose as text, whatever the type: `{{sprint}}` in a heading
+ * becomes characters in a heading. The type is what turns "type the date" into a date picker and
+ * "type one of these four" into a menu — the difference between a form somebody fills correctly and
+ * one they fill approximately.
+ */
+export const TemplateVariableType = z.enum(['text', 'number', 'date', 'select', 'user'])
+export type TemplateVariableType = z.infer<typeof TemplateVariableType>
+
+/**
+ * The names a template author may not take, because the module already fills them.
+ *
+ * `date` and `author` are the two the plan names. The other three are reserved now rather than
+ * later, and that is the whole reason the list is longer than it needs to be today: adding
+ * `{{time}}` in a future release would silently change what an existing template renders if some
+ * author had already declared a variable of that name. Reserving a name costs an author one
+ * synonym; taking one back costs somebody a document that used to be right.
+ */
+export const TEMPLATE_BUILT_IN_VARIABLES = ['date', 'time', 'author', 'space', 'workspace'] as const
+
+/**
+ * What appears between the braces.
+ *
+ * ASCII, lowercase, no spaces — the same shape as `Space.key` and for the same reason: this string
+ * is matched against the body, so `{{Sprint}}` and `{{sprint}}` being two variables is exactly the
+ * near-duplicate that `labels_ws_space_name_uq` refuses next door. An author's own language belongs
+ * in `label`, which is the half a person actually reads.
+ */
+export const TemplateVariableName = z
+  .string()
+  .min(1)
+  .max(40)
+  .regex(/^[a-z][a-z0-9_]*$/, 'lowercase letters, digits and underscores, starting with a letter')
+  .refine(
+    (name) => !(TEMPLATE_BUILT_IN_VARIABLES as readonly string[]).includes(name),
+    'that name is filled by the module itself',
+  )
+
+/**
+ * One thing somebody is asked before the page is made.
+ *
+ * Every field but `name`, `label` and `type` defaults, so a variable written by an older client
+ * still parses. Note what that does to the *output* type: it makes them required, so anything
+ * constructing a variable supplies all six — which is the point, and the reason a widened contract
+ * is additive for parsing and breaking for constructing.
+ */
+export const TemplateVariable = z.object({
+  name: TemplateVariableName,
+  /** what the person filling it in reads; their own language goes here, not in `name` */
+  label: z.string().min(1).max(120),
+  type: TemplateVariableType,
+  /** the menu, for `select`; empty for every other type */
+  options: z.array(z.string().min(1).max(120)).max(50).default([]),
+  /** what the field starts with — text whatever the type, because substitution is textual */
+  default: z.string().max(2000).nullable().default(null),
+  /** whether the page can be made without it */
+  required: z.boolean().default(false),
+})
+export type TemplateVariable = z.infer<typeof TemplateVariable>
+
+/**
+ * One page of a space template, and everything under it.
+ *
+ * Recursive because a space is a tree and flattening it into a list with parent pointers would mean
+ * inventing local ids that exist only inside the column — an identifier nothing outside this
+ * document ever resolves. The depth is bounded by the space it was made from.
+ *
+ * The type is written out and the schema annotated with it, rather than left to inference, because
+ * a self-referencing `const` has no type TypeScript can name on its own and the package emits
+ * declarations.
+ */
+export type TemplateSpaceNode = {
+  title: string
+  icon: string | null
+  doc: Record<string, unknown>
+  children: TemplateSpaceNode[]
+}
+export const TemplateSpaceNode: z.ZodType<TemplateSpaceNode, TemplateSpaceNode> = z.lazy(() =>
+  z.object({
+    title: z.string().max(300),
+    icon: z.string().max(64).nullable(),
+    /** the page's body, with the same `{{variables}}` in it as any other */
+    doc: RichDoc,
+    children: z.array(TemplateSpaceNode),
+  }),
+)
+
+/**
+ * The body of a `space` template: the tree, under one key.
+ *
+ * An object rather than a bare array so that `Template.doc` is a JSON object for both kinds — the
+ * column defaults to `'{}'`, and a default that is the wrong *type* for half the rows is a default
+ * that lies. It also means the two bodies are told apart by their keys rather than by `typeof`.
+ */
+export const TemplateSpaceBody = z.object({ pages: z.array(TemplateSpaceNode) })
+export type TemplateSpaceBody = z.infer<typeof TemplateSpaceBody>
+
+/**
+ * A page, or a whole space, saved so it can be made again.
+ *
+ * `doc` is left opaque here for the reason `RichDoc` is: this file is not what knows the shape of a
+ * document. It is a page doc when `kind` is `page` and a `TemplateSpaceBody` when `kind` is `space`,
+ * and the server parses the second with the schema above.
+ *
+ * A shipped starter is not one of these — it has no id, no workspace and no timestamps, because it
+ * is a constant. What the picker returns is the starters and these together, with a row carrying a
+ * starter's `key` standing in for that starter.
+ */
+export const Template = z.object({
+  id: Id,
+  workspaceId: WorkspaceId,
+  /** null is workspace-wide; a space id scopes it to one space. Always null when `kind` is `space`. */
+  spaceId: Id.nullable(),
+  kind: TemplateKind,
+  /**
+   * The starter this row replaces, or null for somebody's own template.
+   *
+   * `z.string()` and **not** `TemplateStarterKey`, deliberately. This is stored data: a release that
+   * stopped shipping a starter would turn every override of it into a parse failure, which is a
+   * picker that throws rather than a picker missing one entry. A key naming a starter that no longer
+   * exists is an ordinary custom template, and the read side treats it as one.
+   */
+  key: z.string().min(1).max(64).nullable(),
+  /** true exactly when `key` is set — the database holds the pair to that with a check constraint */
+  builtIn: z.boolean(),
+  name: z.string().min(1).max(120),
+  description: z.string().max(2000),
+  /** a Lucide icon name, or an emoji */
+  icon: z.string().max(64).nullable(),
+  doc: RichDoc,
+  variables: z.array(TemplateVariable),
+  createdBy: UserId.nullable(),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+})
+export type Template = z.infer<typeof Template>
+
+/**
+ * A template without its body.
+ *
+ * This exists so that opening a picker does not download every template's prose to draw a list of
+ * names — thirty page docs to render thirty rows, of which one is ever used. The body is fetched
+ * when a template is chosen.
+ */
+export const TemplateSummary = Template.omit({ doc: true })
+export type TemplateSummary = z.infer<typeof TemplateSummary>
+
 export const Ok = z.object({ ok: z.literal(true) })

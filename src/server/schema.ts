@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import {
   boolean,
+  check,
   customType,
   index,
   integer,
@@ -684,6 +685,117 @@ export const importJobs = schema.table(
   ],
 )
 
+/**
+ * A page, or a whole space, saved so it can be made again.
+ *
+ * **The five starters are constants in the module, not rows in here**, and that is the decision this
+ * table is shaped around. `migrations/0011_templates.sql` argues it at length; the short of it is
+ * that a migration runs once per *database* and has no workspace to seed into, that a seeded row is
+ * frozen at the release that wrote it while a constant improves on every release, and that a row
+ * holds one language in a product that ships five.
+ *
+ * What that costs is that a shipped starter cannot be edited, and `builtIn` with `key` is what buys
+ * it back: a row carrying a starter's key **replaces** that starter in the picker rather than
+ * appearing beside it. So the first edit of a starter in a workspace writes one row, a workspace
+ * that never touches them has none, and resetting is deleting the row.
+ */
+export const templates = schema.table(
+  'templates',
+  {
+    id: id(),
+    workspaceId: ws(),
+    /**
+     * Null is a workspace-wide template, offered wherever a page is made; a space id scopes it to one
+     * space. Nullable rather than two tables because every read is the same read — "what may I make
+     * here" — and a union of two tables to answer one question is how the workspace-wide half ends up
+     * quietly missing from one of the places that asks.
+     */
+    spaceId: uuid('space_id'),
+    /** `page` — `doc` is a page body. `space` — `doc` is `{ pages: [...] }`, a tree of them. */
+    kind: text('kind').notNull().default('page'),
+    /**
+     * Which shipped starter this row replaces, or null for somebody's own template.
+     *
+     * A starter is a constant, so its identity is a key (`meeting-notes`, `decision-record`,
+     * `requirements`, `retrospective`, `how-to`) rather than a uuid — there is no row to have an id.
+     *
+     * Not validated against the starter set, here or on the read side: a release that stopped
+     * shipping a starter would otherwise turn every override of it into a parse failure, which is a
+     * picker that throws rather than a picker missing an entry. An unknown key is an ordinary
+     * template.
+     */
+    key: text('key'),
+    /**
+     * True exactly when this row occupies a starter's slot — the check constraint below is what keeps
+     * that true. Something writes it (the first edit of a starter) and something reads it (the picker,
+     * choosing between the constant and the row); a boolean nothing sets is the failure this project
+     * keeps naming about capabilities and permission keys.
+     */
+    builtIn: boolean('built_in').notNull().default(false),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    icon: text('icon'),
+    /**
+     * The body: a `PageDoc` for `page`, `{ pages: [{ title, icon, doc, children }] }` for `space`.
+     * Always an object rather than sometimes an array, so the default is a shape and not a lie.
+     *
+     * Bound by the same rule as everything else that stores a page — a node the editor can produce
+     * and `renderPageDoc` cannot draw is a template that makes blank pages. `render.test.ts` is what
+     * checks that; nothing here can.
+     */
+    doc: jsonObject('doc'),
+    /**
+     * `[{ name, label, type, options, default, required }]` — what somebody is asked before the page
+     * is made, so `{{sprint}}` in the body becomes a sprint. `{{date}}` and `{{author}}` are filled
+     * from the request and are declared by nobody.
+     *
+     * A column rather than a `template_variables` table for the reason `importJobs.report` is one:
+     * written whole, read whole, by one screen, with nothing joining to an entry and no entry
+     * outliving its template.
+     */
+    variables: jsonArray('variables'),
+    /**
+     * Nullable, like every other `createdBy` here and unlike the two job tables. A template is not an
+     * artefact that flattens readerships into one file, so there is nothing to fence to a person, and
+     * a template whose author has left is still the team's template.
+     */
+    createdBy: uuid('created_by'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * "What may I make here" is `kind = 'page' and (space_id = $1 or space_id is null)`, and this one
+     * index serves it rather than a second one for the workspace-wide half. `name` is last so the
+     * read is *covered*, not so it comes back sorted — measured, the plan is an index-only scan with
+     * the `or` applied as a filter inside it and the ordering done afterwards over the few rows that
+     * come out. The shape suggests otherwise, which is why it is written down.
+     *
+     * There is deliberately no `(workspaceId, createdAt desc)` index, unlike the job tables above:
+     * those accumulate a row per request for ever and are read newest-first, while a workspace has
+     * tens of templates read by name.
+     */
+    index('templates_ws_kind_space_idx').on(t.workspaceId, t.kind, t.spaceId, t.name),
+    /**
+     * One override per starter per workspace — two rows both claiming `retrospective` would make
+     * which one the picker draws a coin toss. Partial, because `key` is null on every template
+     * somebody wrote and a plain unique index over a nullable column constrains nothing: NULLs never
+     * collide. Names are not unique in either direction; a workspace calling its own template
+     * "Meeting notes" beside the starter is a thing people mean.
+     */
+    uniqueIndex('templates_ws_key_uq').on(t.workspaceId, t.key).where(sql`key is not null`),
+    /**
+     * Written as an equality rather than as two `or`ed halves because both sides are non-nullable
+     * booleans, so it can never evaluate to NULL and be satisfied by accident — the usual way a
+     * check constraint stops checking. Unqualified column names on purpose: a table-qualified
+     * reference is not legal inside a `CREATE TABLE` constraint.
+     */
+    check('templates_key_matches_built_in', sql`built_in = (key is not null)`),
+    /** A space template makes a space, so it cannot live inside one. */
+    check('templates_space_kind', sql`kind <> 'space' or space_id is null`),
+  ],
+)
+
 /** Every tenant table, so the RLS migration can be checked against one list rather than memory. */
 export const TENANT_TABLES = [
   'spaces',
@@ -702,4 +814,5 @@ export const TENANT_TABLES = [
   'publications',
   'export_jobs',
   'import_jobs',
+  'templates',
 ] as const

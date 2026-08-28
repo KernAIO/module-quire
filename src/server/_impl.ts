@@ -19,6 +19,7 @@ import { quireServices, resolveWorkspaceSegment } from './services/index.js'
 import { createNotify } from './services/notify.js'
 import { documentNameOf, toPage } from './services/pages.js'
 import { type PublicNode, toPublication } from './services/publications.js'
+import { toTemplate } from './services/templates.js'
 import { toVersion } from './services/versions.js'
 
 /**
@@ -1219,6 +1220,260 @@ export function implement_(kernel: Kernel) {
           })
         }),
       ),
+    },
+
+    /**
+     * What somebody writes with.
+     *
+     * Two permissions and a rule for telling them apart: **using** a template is `quire.page.create`,
+     * because what it does is make a page; **changing** one is `quire.space.manage`, because it
+     * changes what everybody in the space is offered the next time they make one. That is exactly
+     * how `labels.*` above is split, and for the same reason.
+     *
+     * A template id carries no scope of its own, so every procedure here that takes one reads the
+     * row first and asks about the space it belongs to. A **workspace-wide** template
+     * (`space_id is null`) has no narrower scope than the workspace, and the workspace-level
+     * `requires()` is the whole answer for it — said out loud here rather than left as a space check
+     * that silently falls back to the space of whoever happened to ask.
+     */
+    templates: {
+      list: scoped.templates.list.use(requires('quire.space.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          /*
+           * A space named is a space checked. Without one the question is "what is offered
+           * everywhere", which the "New space" picker asks before there is a space to ask about —
+           * and `requires()` is the only scope that exists for it.
+           */
+          if (input.spaceId) {
+            await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+            await svc.access.requireSpace(
+              context.principal,
+              'quire.space.view',
+              input.workspaceId,
+              input.spaceId,
+            )
+          }
+          return svc.templates.list(
+            tx,
+            input.workspaceId,
+            input.kind,
+            input.spaceId,
+            context.principal.locale,
+          )
+        }),
+      ),
+
+      get: scoped.templates.get.use(requires('quire.space.view')).handler(({ input, context }) =>
+        run(context, input.workspaceId, async (tx) => {
+          const row = await svc.templates.row(tx, input.workspaceId, input.templateId)
+          if (row.spaceId) {
+            await svc.access.spaceRow(tx, input.workspaceId, row.spaceId)
+            await svc.access.requireSpace(
+              context.principal,
+              'quire.space.view',
+              input.workspaceId,
+              row.spaceId,
+            )
+          }
+          return toTemplate(row)
+        }),
+      ),
+
+      /**
+       * Two questions, not one, and the first is the one that protects anything.
+       *
+       * This copies a page's prose into something everybody who may create a page can then read, so
+       * **may you read what you are copying** is asked against the page's own ancestor chain — a
+       * contractor allowed one page of a handbook must not be able to lift a neighbouring page into
+       * a template and read it there. Only then is "may you configure where it is offered" asked.
+       */
+      createFromPage: scoped.templates.createFromPage
+        .use(requires('quire.space.manage'))
+        .handler(async ({ input, context }) => {
+          const template = await run(context, input.workspaceId, async (tx) => {
+            if (input.kind === 'space') {
+              await svc.access.spaceRow(tx, input.workspaceId, input.sourceId)
+              await svc.access.requireSpace(
+                context.principal,
+                'quire.space.manage',
+                input.workspaceId,
+                input.sourceId,
+              )
+            } else {
+              await requirePage(tx, context, input.workspaceId, input.sourceId, 'quire.page.view')
+              if (input.spaceId)
+                await svc.access.requireSpace(
+                  context.principal,
+                  'quire.space.manage',
+                  input.workspaceId,
+                  input.spaceId,
+                )
+            }
+            return svc.templates.createFromPage(tx, context.principal, input.workspaceId, input)
+          })
+          await announce(input.workspaceId, 'template', template.id, 'created')
+          return template
+        }),
+
+      update: scoped.templates.update
+        .use(requires('quire.space.manage'))
+        .handler(async ({ input, context }) => {
+          const { workspaceId, templateId, ...patch } = input
+          const template = await run(context, workspaceId, async (tx) => {
+            const existing = await svc.templates.row(tx, workspaceId, templateId)
+            if (existing.spaceId)
+              await svc.access.requireSpace(
+                context.principal,
+                'quire.space.manage',
+                workspaceId,
+                existing.spaceId,
+              )
+            // Moving it into a space needs the same permission on the space it is moving into, or
+            // "offered everywhere" would be a way to put a template in a space you may not configure.
+            if (patch.spaceId)
+              await svc.access.requireSpace(
+                context.principal,
+                'quire.space.manage',
+                workspaceId,
+                patch.spaceId,
+              )
+            /*
+             * Replacing the body re-reads a page or a space, so the read is checked again exactly as
+             * it is in `createFromPage`. The same act needs the same permission whichever door it
+             * comes in by, and this is the door that is easy to forget: `update` looks like a rename.
+             */
+            if (patch.sourceId !== undefined) {
+              if (existing.kind === 'space') {
+                await svc.access.spaceRow(tx, workspaceId, patch.sourceId)
+                await svc.access.requireSpace(
+                  context.principal,
+                  'quire.space.manage',
+                  workspaceId,
+                  patch.sourceId,
+                )
+              } else {
+                await requirePage(tx, context, workspaceId, patch.sourceId, 'quire.page.view')
+              }
+            }
+            return svc.templates.update(tx, context.principal, workspaceId, templateId, patch)
+          })
+          await announce(workspaceId, 'template', template.id, 'updated')
+          return template
+        }),
+
+      remove: scoped.templates.remove
+        .use(requires('quire.space.manage'))
+        .handler(async ({ input, context }) => {
+          await run(context, input.workspaceId, async (tx) => {
+            const existing = await svc.templates.row(tx, input.workspaceId, input.templateId)
+            if (existing.spaceId)
+              await svc.access.requireSpace(
+                context.principal,
+                'quire.space.manage',
+                input.workspaceId,
+                existing.spaceId,
+              )
+            await svc.templates.remove(tx, input.workspaceId, input.templateId)
+          })
+          await announce(input.workspaceId, 'template', input.templateId, 'deleted')
+          return { ok: true as const }
+        }),
+
+      /**
+       * Make the thing.
+       *
+       * The kind decides which permission is asked, and the template decides the kind — so the
+       * template is resolved before anything is checked. A page template asks `quire.page.create` on
+       * the space it writes into; a space template *creates* a space, so it asks
+       * `quire.space.manage` at workspace scope, which is the same question `spaces.create` asks and
+       * the only scope that exists before a space does.
+       */
+      instantiate: scoped.templates.instantiate
+        .use(requires('quire.page.create'))
+        .handler(async ({ input, context }) => {
+          /*
+           * Which branch ran, recorded rather than inferred from the answer.
+           *
+           * `TemplateResult` is one shape for both kinds on purpose, so nothing in it says "a space
+           * was made" — and guessing from `pageCount` would be wrong for the two cases that matter:
+           * a space template whose tree is one page, and one whose tree is empty.
+           */
+          let madeSpace = false
+          const result = await run(context, input.workspaceId, async (tx) => {
+            const resolved = await svc.templates.resolve(
+              tx,
+              input.workspaceId,
+              context.principal.locale,
+              input.templateId,
+              input.starterKey,
+            )
+
+            if (resolved.kind === 'space') {
+              madeSpace = true
+              if (!input.key || !input.name)
+                throw KernError.badRequest('A space template needs a name and an address for the space')
+              await kernel.authz.require(context.principal, 'quire.space.manage', {
+                kind: 'workspace',
+                id: input.workspaceId,
+                workspaceId: input.workspaceId,
+              })
+              return svc.templates.instantiateSpace(tx, context.principal, input.workspaceId, resolved, {
+                key: input.key,
+                name: input.name,
+                values: input.values,
+              })
+            }
+
+            if (!input.spaceId) throw KernError.badRequest('A page template needs a space to be made in')
+            await svc.access.spaceRow(tx, input.workspaceId, input.spaceId)
+            await svc.access.requireSpace(
+              context.principal,
+              'quire.page.create',
+              input.workspaceId,
+              input.spaceId,
+            )
+            return svc.templates.instantiatePage(tx, context.principal, input.workspaceId, resolved, {
+              spaceId: input.spaceId,
+              parentId: input.parentId,
+              afterId: input.afterId,
+              title: input.title,
+              values: input.values,
+            })
+          })
+
+          /*
+           * A space template makes a space *and* a tree, so both are announced — the space list and
+           * one space's tree are different screens, and announcing only the pages would leave the
+           * space list empty until somebody reloaded.
+           */
+          if (madeSpace) {
+            await announce(input.workspaceId, 'space', result.spaceId, 'created')
+            await kernel.emit(
+              quireEvents.spaceCreated,
+              { spaceId: result.spaceId, workspaceId: input.workspaceId },
+              { workspaceId: input.workspaceId, actorId: context.principal.userId },
+            )
+          }
+          /*
+           * One event, for the page somebody is about to be taken to.
+           *
+           * A space template that made eleven pages emits one `pageCreated` and not eleven: an event
+           * is what something *reacts* to, and eleven notifications for one act is the shape that
+           * teaches people to mute a feed. `pageCount` in the answer is how a screen says how many.
+           * A tree with no pages emits nothing rather than an event carrying an empty page id.
+           */
+          if (result.pageId) {
+            await announce(input.workspaceId, 'page', result.pageId, 'created', {
+              spaceId: result.spaceId,
+            })
+            await kernel.emit(
+              quireEvents.pageCreated,
+              { pageId: result.pageId, spaceId: result.spaceId, workspaceId: input.workspaceId },
+              { workspaceId: input.workspaceId, actorId: context.principal.userId },
+            )
+          }
+          return result
+        }),
     },
 
     publishing: {

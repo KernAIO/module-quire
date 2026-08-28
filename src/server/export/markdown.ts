@@ -356,11 +356,53 @@ const BLOCK_WRITERS: Record<string, BlockWriter> = {
   detailsSummary: (node, options) => inline(node.content, options),
   detailsContent: (node, options) => blocks(node.content, options),
 
-  // Blocks in name only: both are inline nodes that can also stand alone as a whole block.
+  /*
+   * The macros.
+   *
+   * **A file is not a reader, so no macro that reads other pages writes anything here.** This
+   * writer is handed one document and nothing else — no principal, no publication, no resolver —
+   * which is exactly the state in which the HTML renderer next door draws an empty frame. Writing
+   * a placeholder sentence would be worse than the blank it replaces: an export is a file somebody
+   * keeps, and a line saying "children of this page" that will never fill in is a promise the file
+   * cannot keep. An exporter that grows an audience can pass one to `renderPageDoc` and write the
+   * result; until then the honest output is nothing.
+   *
+   * They are still listed rather than left to the unknown-node fallback, because that fallback
+   * writes a node's children — and `excerpt` has children that must be written, while the five
+   * atoms have none. Naming all eight is what `export.int.test.ts` holds this table to.
+   */
+  pageChildren: () => '',
+  excerptInclude: () => '',
+  includePage: () => '',
+  recentlyUpdated: () => '',
+  contributors: () => '',
+
+  /*
+   * An excerpt is this page's own prose, so it is written as itself. The marker is lost, which is
+   * the format's limit rather than a decision: Markdown has no way to say "this paragraph is the
+   * quotable one", and an HTML wrapper around it would be a raw block in every other reader.
+   */
+  excerpt: (node, options) => blocks(node.content, options),
+
+  /*
+   * An expand is a `<details>` like the toggle above it, and for the same reason — Markdown has no
+   * syntax for one. `open` is carried, because the writer stored that decision and a file that
+   * silently closes every section loses it.
+   */
+  expand: (node, options) => {
+    const summary = (node.content ?? []).find((child) => child.type === 'detailsSummary')
+    const rest = (node.content ?? []).filter((child) => child.type !== 'detailsSummary')
+    const title = summary ? inline(summary.content, options) : ''
+    const open = node.attrs?.open === true || node.attrs?.open === 'true' ? ' open' : ''
+    return `<details${open}>\n<summary>${title}</summary>\n\n${blocks(rest, options)}\n\n</details>`
+  },
+
+  // Blocks in name only: all three are inline nodes that can also stand alone as a whole block.
   image: (node, options) => INLINE_WRITERS.image!(node, options),
   hardBreak: () => '',
   mention: (node, options) => INLINE_WRITERS.mention!(node, options),
   pageMention: (node, options) => INLINE_WRITERS.pageMention!(node, options),
+  statusLozenge: (node, options) => INLINE_WRITERS.statusLozenge!(node, options),
   text: (node) => escapeInline(node.text ?? ''),
 }
 

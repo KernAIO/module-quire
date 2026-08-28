@@ -5,10 +5,12 @@ import { quireComments } from './comments.js'
 import { quireDatabases } from './databases.js'
 import { quireExport } from './export.js'
 import { quireImport } from './import.js'
+import { quireMacros } from './macros.js'
 import { quireOrganisation } from './organisation.js'
 import { quirePages } from './pages.js'
 import { quirePublications } from './publications.js'
 import { quireSpaces } from './spaces.js'
+import { quireTemplates } from './templates.js'
 import { quireVersions } from './versions.js'
 
 export interface QuireServices {
@@ -22,6 +24,8 @@ export interface QuireServices {
   publications: ReturnType<typeof quirePublications>
   exports: ReturnType<typeof quireExport>
   imports: ReturnType<typeof quireImport>
+  templates: ReturnType<typeof quireTemplates>
+  macros: ReturnType<typeof quireMacros>
 }
 
 const cache = new WeakMap<Kernel, QuireServices>()
@@ -35,17 +39,37 @@ export function quireServices(kernel: Kernel): QuireServices {
   // An import writes pages *and* databases, so it is the one service built on another one: it needs
   // `databases` to mint the properties whose keys its rows are keyed by. See `import.ts`'s `write`.
   const databases = quireDatabases(kernel, access)
+  /*
+   * Templates make pages and spaces, so they are built on the two services that already know how —
+   * a second implementation of "create a page" would be a second fractional-index algorithm, and two
+   * orderings of one tree is a sidebar that disagrees with itself.
+   */
+  const spaces = quireSpaces(access)
+  const pages = quirePages(access)
+  /*
+   * Built before `publications`, which needs it: a published page's HTML is rendered on the public
+   * path, and a macro inside it has to resolve there too — against the publication rather than
+   * against a reader, because on that path there is no reader at all.
+   */
+  const macros = quireMacros(kernel, access)
   const services: QuireServices = {
     access,
-    spaces: quireSpaces(access),
-    pages: quirePages(access),
+    spaces,
+    pages,
     versions,
     comments: quireComments(access),
     databases,
     organisation: quireOrganisation(access),
-    publications: quirePublications(kernel, access, versions),
+    publications: quirePublications(kernel, access, versions, macros),
     exports: quireExport(kernel, access),
     imports: quireImport(kernel, access, databases),
+    templates: quireTemplates(kernel, access, pages, spaces),
+    /*
+     * Macros resolve *reads* against whoever is reading, so this service has `access` and nothing
+     * that writes. It is deliberately not built on `pages`: a macro must never reach a procedure
+     * that answers for the caller rather than for the reader.
+     */
+    macros,
   }
   cache.set(kernel, services)
   return services
@@ -106,10 +130,12 @@ export * from './comments.js'
 export * from './databases.js'
 export * from './export.js'
 export * from './import.js'
+export * from './macros.js'
 export * from './organisation.js'
 export * from './pages.js'
 export * from './publications.js'
 /** The public surface resolves a workspace slug before anything touches the schema. */
 export { resolveWorkspaceSegment } from './publications.js'
 export * from './spaces.js'
+export * from './templates.js'
 export * from './versions.js'

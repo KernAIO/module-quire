@@ -239,6 +239,7 @@ describe('migrations', () => {
       'recent_views',
       'relations',
       'spaces',
+      'templates',
       'views',
       'watchers',
     ])

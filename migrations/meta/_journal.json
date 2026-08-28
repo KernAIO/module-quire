@@ -78,6 +78,13 @@
       "when": 1788040627617,
       "tag": "0010_transfers",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788127027617,
+      "tag": "0011_templates",
+      "breakpoints": true
     }
   ]
 }

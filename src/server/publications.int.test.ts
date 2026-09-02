@@ -188,6 +188,13 @@ async function restrictedPool(): Promise<pg.Pool> {
   url.username = RLS_ROLE
   url.password = 'rls'
   restricted = new pg.Pool({ connectionString: url.toString(), max: 2 })
+  // `drop database ... with (force)` in afterAll SIGTERMs every backend still attached to the scratch
+  // database, and `pool.end()` destroys a client's socket as soon as it has sent Terminate — so a backend
+  // that has not reaped its socket yet can still land a terminating FATAL (57P01) in the buffer of an
+  // idle pooled client. pg-pool re-emits an idle client's error on the pool, and an unlistened 'error'
+  // event fails the entire vitest run after every test in it has already passed. The database is on its
+  // way out by then, so there is nothing to do but swallow it.
+  restricted.on('error', () => undefined)
   return restricted
 }
 

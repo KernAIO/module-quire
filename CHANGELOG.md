@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.16.2
+
+### Patch Changes
+
+- test(quire): tolerate the force-drop FATAL race at scratch-db teardown
+
 ## 0.16.1
 
 ### Patch Changes

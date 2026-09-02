@@ -69,9 +69,6 @@
     "svelte": "^5.46.0"
   },
   "peerDependenciesMeta": {
-    "@kernhq/ui": {
-      "optional": true
-    },
     "@tanstack/svelte-query": {
       "optional": true
     },

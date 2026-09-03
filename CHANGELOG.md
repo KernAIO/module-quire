@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.16.3
+
+### Patch Changes
+
+- test(quire): bless the permission matrix and cross-tenant isolation
+
 ## 0.16.2
 
 ### Patch Changes

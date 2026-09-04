@@ -1,5 +1,12 @@
 # @kernhq/module-quire
 
+## 0.16.4
+
+### Patch Changes
+
+- c115b69: The page picker behind the "embed a page" block has its words: its title, search box, space
+  selector and empty state were rendering their message keys, in every language.
+
 ## 0.16.3
 
 ### Patch Changes

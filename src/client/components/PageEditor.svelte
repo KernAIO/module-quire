@@ -4,15 +4,19 @@ import {
   type CollabPeer,
   type CollabStatus,
   type CommentRange,
+  coreApi,
   EmptyState,
   getHost,
+  keys,
   session,
 } from '@kernhq/ui'
 import { createQuery } from '@tanstack/svelte-query'
 import { getQuireApi } from '../api-instance.js'
+import { type CoreApi, toPerson } from '../core-api.js'
 import { t } from '../i18n.js'
 import { type Page, pageDocumentName } from '../index.js'
 import { quireKeys } from '../query.js'
+import { pageCandidates, personCandidates } from '../suggest.js'
 import PagePicker from './PagePicker.svelte'
 
 /**
@@ -120,6 +124,42 @@ function macroPageLabel(pageId: string): string | null {
   if (title === null) return null
   return title.trim() || t('untitled')
 }
+
+/* ---------------------------------------------------------------------------------------------- */
+/* The two suggestion menus — `@` for people, `+` for pages                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Both triggers are installed by `@kernhq/ui` whatever the host passes, and both are empty without
+ * a source: the design system has no API client, so a menu with no source answers every keystroke
+ * with "Nothing matches that". This surface installed both and supplied neither, on the one screen
+ * the module exists for, so `@` and `+` — and the `/` menu's **Mention someone**, which types an
+ * `@` — each opened a popup that could never say anything. The lists themselves are in
+ * `suggest.ts`, where they can be asserted without a browser.
+ *
+ * Read at the moment the menu asks, not when the editor was built: the editor is created once and
+ * these are plain functions closing over reactive state, exactly as `macroPageLabel` above is.
+ */
+const core = coreApi<CoreApi>()
+const membersQuery = createQuery(() => ({
+  queryKey: keys.members(doc.workspaceId),
+  enabled: Boolean(doc.workspaceId),
+  queryFn: () => core.workspaces.members.list({ workspaceId: doc.workspaceId, limit: 200 }),
+}))
+/* The same key the page's byline and the margin already hold, so on an open page this costs nothing. */
+const people = $derived((membersQuery.data?.items ?? []).map(toPerson))
+
+const mentionSource = (query: string) => personCandidates(people, query)
+
+/**
+ * Pages of the space being written in — the tree this component already loads for the macro cards.
+ *
+ * The space rather than the workspace, because the contract has no cross-space page search and a
+ * menu that opens on every keystroke must not fan out over every space's tree. Linking across
+ * spaces is what the macro picker is for, and it carries a space control.
+ */
+const pageSource = (query: string) =>
+  pageCandidates(treeQuery.data ?? [], query, { excludeId: doc.id, untitled: t('untitled') })
 </script>
 
 {#if getHost().isMock}
@@ -158,6 +198,8 @@ function macroPageLabel(pageId: string): string | null {
       {activeComment}
       {onCommentClick}
       {oncomment}
+      {mentionSource}
+      {pageSource}
       {pickPage}
       {macroPageLabel}
     />

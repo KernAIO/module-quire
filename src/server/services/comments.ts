@@ -28,18 +28,24 @@ export function toComment(row: CommentRow): Comment {
 }
 
 /**
- * Flatten a comment body to text, for search and for a notification's one-line preview.
+ * Flatten a comment body to text, for the margin, and for a notification's one-line preview.
  *
  * Deliberately dumb: it walks whatever the editor produced and takes the `text` leaves. A renderer
  * that understood every node would have to be kept in step with the editor's schema, and the only
  * thing this is used for is a line of plain prose.
+ *
+ * A mention is the one exception, and it earns it: it is an inline leaf with no `text` at all, so
+ * a body of "@Ada is this still true?" flattened to "is this still true?" — the margin dropped the
+ * name and the notification that told Ada she had been named led with the half of the sentence that
+ * did not name her. `@` plus the label, which is what `textFromPageDoc` does with the same node.
  */
 export function flattenBody(body: unknown): string {
   const out: string[] = []
   const walk = (node: unknown): void => {
     if (!node || typeof node !== 'object') return
-    const n = node as { text?: unknown; content?: unknown[] }
+    const n = node as { type?: string; text?: unknown; attrs?: { label?: unknown }; content?: unknown[] }
     if (typeof n.text === 'string') out.push(n.text)
+    if (n.type === 'mention' && typeof n.attrs?.label === 'string') out.push(`@${n.attrs.label}`)
     if (Array.isArray(n.content)) for (const child of n.content) walk(child)
   }
   walk(body)

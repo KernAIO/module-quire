@@ -753,7 +753,9 @@ describe('comments', () => {
       }),
     )
     expect(c.mentionIds).toEqual([BOB])
-    expect(c.bodyText).toBe('what do you think')
+    // The name stays in the text: the margin draws `bodyText`, and so does the notification that
+    // tells Bob he was named — both of which used to drop him. See `comments.test.ts`.
+    expect(c.bodyText).toBe('what do you think @Bob')
   })
 
   it('joins replies to the thread rather than nesting them further', async () => {

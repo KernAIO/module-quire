@@ -19,6 +19,7 @@ import { t } from '../i18n.js'
 import type { CommentThread } from '../index.js'
 import { canQuire } from '../permissions.js'
 import { quireKeys } from '../query.js'
+import { personCandidates } from '../suggest.js'
 
 /**
  * The margin.
@@ -67,13 +68,25 @@ const membersQuery = createQuery(() => ({
   enabled: Boolean(workspaceId),
   queryFn: () => core.workspaces.members.list({ workspaceId, limit: 200 }),
 }))
+const people = $derived((membersQuery.data?.items ?? []).map(toPerson))
 const nameOf = $derived.by(() => {
-  const byId = new Map((membersQuery.data?.items ?? []).map(toPerson).map((p) => [p.id, p]))
+  const byId = new Map(people.map((p) => [p.id, p]))
   // `authorId` is nullable — a comment left by somebody since removed from the workspace — and an
   // unresolved id reads the same way, so both land on the same honest placeholder.
   return (id: string | null) =>
     (id ? byId.get(id) : undefined) ?? { id: id ?? '', name: t('comment_someone'), avatarUrl: null }
 })
+
+/**
+ * `@` in a comment, from the same member list the bylines above are drawn from.
+ *
+ * `RichTextEditor` installs the mention node **only** when a source is passed, so without this
+ * typing `@ada` left the characters `@ada` in the paragraph and nothing else — no node, and
+ * therefore no notification. The server has always read `mention` nodes out of a comment body and
+ * told everybody named (`mentionsIn`, `notify.mentions`, the `quire.mention` notification type):
+ * that whole path was unreachable, because no surface in this module could produce one.
+ */
+const mentionSource = (query: string) => personCandidates(people, query)
 
 let draft = $state<unknown>(undefined)
 let replyTo = $state<string | null>(null)
@@ -81,9 +94,22 @@ let replyDraft = $state<unknown>(undefined)
 let busy = $state(false)
 let error = $state<string | null>(null)
 
+/**
+ * Whether there is anything to post.
+ *
+ * A mention counts. It used to look for a `"text"` key in the serialised document, which a mention
+ * node does not have — attributes and nothing else — so "@Ada" on its own was a comment the Post
+ * button refused, silently, on the one composer where naming somebody is the whole message.
+ */
 const empty = (doc: unknown) => {
-  const text = JSON.stringify(doc ?? {})
-  return !text.includes('"text"')
+  const has = (node: unknown): boolean => {
+    if (!node || typeof node !== 'object') return false
+    const n = node as { type?: string; text?: unknown; content?: unknown[] }
+    if (typeof n.text === 'string' && n.text.trim() !== '') return true
+    if (n.type === 'mention') return true
+    return (n.content ?? []).some(has)
+  }
+  return !has(doc)
 }
 
 async function submit(parentId: string | null, body: unknown) {
@@ -155,6 +181,7 @@ async function remove(commentId: string) {
         label={t('comment_field')}
         placeholder={t('comment_placeholder')}
         minRows={2}
+        {mentionSource}
       />
       <div class="actions">
         <Button size="sm" variant="secondary" onclick={() => onPendingHandled?.()}>{t('cancel')}</Button>
@@ -235,6 +262,7 @@ async function remove(commentId: string) {
               label={t('comment_reply_field')}
               placeholder={t('comment_reply')}
               minRows={1}
+              {mentionSource}
             />
             <div class="actions">
               <Button size="sm" variant="secondary" onclick={() => (replyTo = null)}>{t('cancel')}</Button>

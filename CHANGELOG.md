@@ -1,5 +1,26 @@
 # @kernhq/module-quire
 
+## 0.17.0
+
+### Minor Changes
+
+- 6ab429b: `@` in a comment names somebody, and they are told. The comment composer and its reply box were
+  given no mention source, so `RichTextEditor` never installed the mention node and typing `@ada`
+  left the characters `@ada` in a sentence — while the server has always read `mention` nodes out of
+  a body and raised a `quire.mention` notification for everybody named. A comment that is only a
+  mention can now be posted, and the name stays in the line the margin and the notification show.
+- b393959: `@` and `+` in a page find something. The wiki editor installed both suggestion menus and supplied
+  neither source, so mentioning a person and linking a page each opened a popup reading "Nothing
+  matches that" — as did the `/` menu's **Mention someone**, which types an `@`. `@` now offers the
+  workspace's members, and `+` the pages of the space, each with the section it lives in so two
+  "Overview" pages can be told apart.
+
+### Patch Changes
+
+- 5d5de7b: Peer on `@kernhq/kernel` `^0.10.0`. A caret on 0.x does not cross a minor, so the previous range
+  stopped reaching the framework the day 0.10.0 was published — a host installing this module from
+  the registry could not resolve a kernel it declares.
+
 ## 0.16.4
 
 ### Patch Changes

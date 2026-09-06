@@ -24,6 +24,17 @@ const BASE = process.env.DATABASE_URL ?? 'postgres://kern:kern@localhost:5432/ke
 const DB = `kern_quire_migrations_${Date.now().toString(36)}`
 const DIR = join(dirname(fileURLToPath(import.meta.url)), '../../migrations')
 
+/**
+ * The tables in `mod_quire` that carry `workspace_id` and deliberately have no policy, each with
+ * the reason and the code that keeps them safe.
+ *
+ * It is empty, and that is the module's claim: every table here holding a `workspace_id` is fenced
+ * by a forced policy. Adding a name is a decision somebody records, not a way to make a red test
+ * green: a table that belongs here is one whose isolation is enforced somewhere a reader can go and
+ * look at.
+ */
+const UNSECURED_BY_DESIGN: Record<string, string> = {}
+
 let admin: pg.Client
 let client: pg.Client
 
@@ -143,6 +154,69 @@ describe('the migrations', () => {
     expect(
       tables.map((r) => r.relname).filter((t) => !(TENANT_TABLES as readonly string[]).includes(t)),
       'a table in mod_quire that TENANT_TABLES does not name — decide whether it is tenant-scoped',
+    ).toEqual([])
+  })
+
+  /**
+   * The same question the assertion above answers, asked in the shape every other first-party
+   * module now asks it.
+   *
+   * Quire is the one module that already closed this gap from the other direction: the check above
+   * requires every table in `mod_quire` to be named in `TENANT_TABLES` and every name in it to hold
+   * exactly one forced policy, so a table with no policy fails there too. This is deliberately
+   * redundant with it. It is here so that the guard has **one shape across all seven modules** —
+   * greppable, comparable, and carrying the explicit exception list that is the part a reader needs
+   * when a module does keep an unsecured tenant table (`module-tracker` keeps two, `module-billing`
+   * three). A guard that is written differently in every repository is one nobody can audit at once,
+   * which is how twelve unsecured tenant tables went uncounted while every module's test was green
+   * (measured on a database created from nothing, 2026-09-06).
+   *
+   * `relkind in ('r','p')` on purpose: a partitioned parent is `'p'`, and an `'r'`-only query
+   * silently skips it. The check above is `'r'`-only, so this is not purely redundant.
+   */
+  it('secures every table that carries a workspace column, or names it as an exception', async () => {
+    await applyAll()
+    const { rows } = await client.query<{
+      relname: string
+      enabled: boolean
+      forced: boolean
+      policies: number
+      partition: boolean
+    }>(
+      `select c.relname,
+              c.relrowsecurity as enabled,
+              c.relforcerowsecurity as forced,
+              (select count(*)::int from pg_policy p where p.polrelid = c.oid) as policies,
+              c.relispartition as partition
+         from pg_class c
+        where c.relnamespace = 'mod_quire'::regnamespace
+          and c.relkind in ('r', 'p')
+          and exists (select 1 from pg_attribute a
+                       where a.attrelid = c.oid and a.attname = 'workspace_id' and not a.attisdropped)
+        order by c.relname`,
+    )
+    expect(rows.length, 'no tenant table found at all — the schema did not build').toBeGreaterThan(0)
+
+    const unsecured = rows.filter((r) => !r.enabled || !r.forced || r.policies === 0).map((r) => r.relname)
+    expect(
+      unsecured.filter((t) => !(t in UNSECURED_BY_DESIGN)),
+      'carries workspace_id, has no forced policy, and is not declared an exception',
+    ).toEqual([])
+
+    // The list is only worth trusting if it decays: an exception that has since been given a policy
+    // has to leave, or the next reader believes a table is unprotected when it is not.
+    expect(
+      Object.keys(UNSECURED_BY_DESIGN).filter((t) => !unsecured.includes(t)),
+      'declared an exception and now secured — delete the entry',
+    ).toEqual([])
+
+    // And a table nobody has classified at all is the thing that started this: it must be named
+    // either as a tenant table or as an exception, so adding one is a decision rather than an
+    // omission. Partitions are excluded — `TENANT_TABLES` names the parent, not the months.
+    const classified = new Set<string>([...TENANT_TABLES, ...Object.keys(UNSECURED_BY_DESIGN)])
+    expect(
+      rows.filter((r) => !r.partition && !classified.has(r.relname)).map((r) => r.relname),
+      'carries workspace_id but is in neither TENANT_TABLES nor UNSECURED_BY_DESIGN',
     ).toEqual([])
   })
 

@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.17.2
+
+### Patch Changes
+
+- test: ask the RLS question in the shape the other modules ask it
+
 ## 0.17.1
 
 ### Patch Changes

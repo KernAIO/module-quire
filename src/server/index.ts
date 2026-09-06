@@ -12,6 +12,7 @@ import {
   quirePermissions,
 } from '../contract/index.js'
 import { defineModule, defineServerModule, implement_, packageVersion } from './_impl.js'
+import { seedQuireDemo } from './demo.js'
 import { pageDocFromBase64 } from './document.js'
 import { textFromPageDoc } from './render.js'
 import { pages, schema, spaces } from './schema.js'
@@ -109,6 +110,8 @@ export const quireModule = defineServerModule({
   router: implement_,
   /** Gathered in `services/index.ts`, so adding one is not an edit to this file. */
   jobs: quireJobs,
+
+  demo: { seed: seedQuireDemo },
 
   /**
    * `quire:page:<id>` documents for the workspace-wide search index.

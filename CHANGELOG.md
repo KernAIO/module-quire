@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.17.4
+
+### Patch Changes
+
+- build: force one @kernhq/kernel copy with pnpm.overrides
+
 ## 0.17.3
 
 ### Patch Changes

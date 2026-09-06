@@ -284,21 +284,30 @@ export async function seedQuireDemo(ctx: DemoSeedContext): Promise<DemoSeedSumma
       let pageCount = 0
 
       const handbook = await svc.spaces.create(tx, actor, workspaceId, {
-        key: 'HB',
+        /*
+         * Lowercase, and that is a rule rather than a style: `Space.key` is
+         * `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`, and `SpaceService.create` does not check it — the
+         * router's input contract does, so an internal caller can write a row the *output* contract
+         * then refuses. Seeded as `HB`/`ENG`/`PRD`, this produced spaces that existed, belonged to
+         * the right workspace and were `open`, while `quire.spaces.list` answered **500 Output
+         * validation failed** for the whole workspace: the module was completely unusable and the
+         * screen said "No spaces yet". Found on Kern Cloud, not by any test.
+         */
+        key: 'handbook',
         name: 'Company handbook',
         description: 'How we work, what we agreed, and where the answers are.',
         icon: '📗',
         visibility: 'open',
       })
       const engineering = await svc.spaces.create(tx, actor, workspaceId, {
-        key: 'ENG',
+        key: 'engineering',
         name: 'Engineering',
         description: 'Architecture, runbooks and the decisions behind them.',
         icon: '🛠️',
         visibility: 'open',
       })
       const product = await svc.spaces.create(tx, actor, workspaceId, {
-        key: 'PRD',
+        key: 'product',
         name: 'Product',
         description: 'What we are building, what we are not, and why.',
         icon: '🧭',

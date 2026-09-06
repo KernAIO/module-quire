@@ -4,10 +4,12 @@ import { createKernel, type Kernel } from '@kernhq/kernel'
 import { eq } from 'drizzle-orm'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { Space } from '../contract/models.js'
 import { seedQuireDemo } from './demo.js'
 import { pageDocFromBase64 } from './document.js'
 import { quireModule } from './index.js'
 import { databases, pages, properties, spaces } from './schema.js'
+import { quireServices } from './services/index.js'
 import { documentNameOf } from './services/pages.js'
 
 /**
@@ -105,7 +107,23 @@ describe('the demo seeder', () => {
       properties: await tx.select().from(properties).where(eq(properties.workspaceId, WS)),
     }))
 
-    expect(rows.spaces.map((s) => s.key).sort()).toEqual(['ENG', 'HB', 'PRD'])
+    expect(rows.spaces.map((s) => s.key).sort()).toEqual(['engineering', 'handbook', 'product'])
+
+    /*
+     * Read them back the way the screen does, and put each through the contract.
+     *
+     * This is the assertion the first version did not have, and the defect it would have caught was
+     * not subtle: the seeder wrote `HB`, `ENG` and `PRD`, `SpaceService.create` does not check the
+     * key (only the router's input contract does), and `Space.key` is lowercase-only — so
+     * `quire.spaces.list` answered **500 Output validation failed** for the whole workspace and
+     * Quire was unusable. Counting rows in the table said everything was fine. Asserting on what a
+     * reader is *told*, not on what the table holds.
+     */
+    const listed = await kernel.database.withWorkspace(WS, (tx) =>
+      quireServices(kernel).spaces.list(tx, actor(), WS, false),
+    )
+    expect(listed.length).toBe(3)
+    for (const space of listed) expect(() => Space.parse(space)).not.toThrow()
     expect(rows.pages.length).toBe(summary.created?.pages)
 
     // A tree, not a flat list: the handbook's "Welcome" has children under it.

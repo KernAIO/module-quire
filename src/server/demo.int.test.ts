@@ -135,6 +135,28 @@ describe('the demo seeder', () => {
     }
   })
 
+  /*
+   * The case the first version of these seeders got wrong: the emptiness guard left `workspace_id`
+   * to row-level security, so on any database whose owner can bypass a policy it saw the previous
+   * workspace's spaces and skipped. This test database connects as a superuser, which is exactly
+   * that kind, so a second workspace is the cheapest reproduction there is.
+   */
+  it('fills a second workspace in the same database', async () => {
+    const other = randomUUID()
+    const summary = await seedQuireDemo({
+      kernel,
+      workspaceId: other,
+      actorId: OWNER,
+      actor: actor(),
+      now: new Date(),
+    })
+    expect(summary.skipped).toBeFalsy()
+    const rows = await kernel.database.withWorkspace(other, (tx) =>
+      tx.select().from(spaces).where(eq(spaces.workspaceId, other)),
+    )
+    expect(rows.length).toBe(3)
+  })
+
   it('leaves a workspace that already holds something alone', async () => {
     const before = await kernel.database.withWorkspace(WS, (tx) =>
       tx.select().from(pages).where(eq(pages.workspaceId, WS)),

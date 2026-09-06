@@ -268,8 +268,17 @@ export async function seedQuireDemo(ctx: DemoSeedContext): Promise<DemoSeedSumma
   return kernel.database.withWorkspace(
     workspaceId,
     async (tx) => {
-      // See the tracker's seeder for why the guard reads the table rather than a marker row.
-      const [existing] = await tx.select({ id: spaces.id }).from(spaces).limit(1)
+      /*
+       * See the tracker's seeder for why the guard reads the table rather than a marker row — and
+       * why `workspace_id` is in the predicate instead of being left to row-level security. An
+       * unscoped guard sees another workspace's spaces on any database whose owner can bypass a
+       * policy, and reports an empty workspace as used.
+       */
+      const [existing] = await tx
+        .select({ id: spaces.id })
+        .from(spaces)
+        .where(eq(spaces.workspaceId, workspaceId))
+        .limit(1)
       if (existing) return { skipped: true }
 
       let pageCount = 0

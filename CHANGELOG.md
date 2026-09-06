@@ -1,5 +1,11 @@
 # @kernhq/module-quire
 
+## 0.17.3
+
+### Patch Changes
+
+- build(deps): raise @kernhq/testing to ^0.1.14
+
 ## 0.17.2
 
 ### Patch Changes
